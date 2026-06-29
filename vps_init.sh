@@ -1,6 +1,7 @@
 #!/bin/bash
 #==================================================
-# VPS 一键安全初始化脚本 v4.1 - 代码结构优化 + 快捷命令
+# VPS 一键安全初始化脚本 v4.3 - 全面优化版
+# 新增：IPv4/IPv6 双栈显示、输入容错、体验优化
 # 时区默认：Asia/Hong_Kong
 #==================================================
 set -o pipefail
@@ -22,6 +23,7 @@ ICON_ROCKET="🚀"; ICON_LOCK="🔒"; ICON_USER="👤"; ICON_HOST="🖥️"
 ICON_CLOCK="🕐"; ICON_PORT="🔌"; ICON_DONE="🎉"; ICON_PKG="📦"
 ICON_SWAP="💾"; ICON_BBR="⚡"; ICON_F2B="🛡️"; ICON_MON="📊"
 ICON_FW="🔥"; ICON_HARD="🧹"; ICON_CLIENT="🔗"
+ICON_IPV4="🌐"; ICON_IPV6="🌏"
 
 #-------- 工具函数 --------
 log()    { printf "%s %b\n" "$(date '+%H:%M:%S')" "$*" | tee -a "$LOG_FILE"; }
@@ -55,7 +57,6 @@ pkg_install() {
     esac
 }
 
-# 安全确认（仅返回状态码，无多余输出）
 confirm() {
     local prompt="$1" default="$2" input
     while true; do
@@ -92,14 +93,35 @@ generate_random_port() {
     done
 }
 
-validate_hostname() { [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$ ]] || err "无效主机名: $1"; }
+# ★ 主机名验证：错误时警告并返回1，不退出
+validate_hostname() {
+    if [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$ ]]; then
+        return 0
+    else
+        warn "无效主机名: $1"
+        return 1
+    fi
+}
 
+# ★ 用户名验证：错误时警告并返回1，不退出
 validate_username() {
     local u="$1" r
     local reserved=(root bin daemon adm lp sync shutdown halt mail news uucp operator games gopher ftp nobody)
-    for r in "${reserved[@]}"; do [ "$u" = "$r" ] && err "系统保留用户: $u"; done
-    id "$u" &>/dev/null && err "用户 $u 已存在"
-    [[ "$u" =~ ^[a-z_][a-z0-9_-]*$ ]] || err "用户名格式错误"
+    for r in "${reserved[@]}"; do
+        if [ "$u" = "$r" ]; then
+            warn "系统保留用户: $u"
+            return 1
+        fi
+    done
+    if id "$u" &>/dev/null; then
+        warn "用户 $u 已存在，请使用其他用户名"
+        return 1
+    fi
+    if [[ ! "$u" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+        warn "用户名格式错误"
+        return 1
+    fi
+    return 0
 }
 
 safe_sed() {
@@ -126,7 +148,37 @@ restart_ssh() {
     systemctl restart "$svc" 2>/dev/null || service "$svc" restart 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null
 }
 
-# 显示系统信息（精简版）
+# ★ 获取公网 IPv4（超时3秒）
+get_public_ipv4() {
+    curl -s4 --max-time 3 ifconfig.me 2>/dev/null || \
+    curl -s4 --max-time 3 icanhazip.com 2>/dev/null || \
+    hostname -I 2>/dev/null | awk '{print $1}'
+}
+
+# ★ 获取公网 IPv6（超时3秒）
+get_public_ipv6() {
+    curl -s6 --max-time 3 ifconfig.me 2>/dev/null || \
+    curl -s6 --max-time 3 icanhazip.com 2>/dev/null
+}
+
+# ★ 获取当前SSH客户端IP（多重回退）
+get_client_ip() {
+    [ -n "$SSH_CONNECTION" ] && { echo "$SSH_CONNECTION" | awk '{print $1}'; return; }
+    [ -n "$SSH_CLIENT" ] && { echo "$SSH_CLIENT" | awk '{print $1}'; return; }
+    local who_line=$(who -m 2>/dev/null)
+    [ -n "$who_line" ] && {
+        local ip=$(echo "$who_line" | awk -F'[()]' '{print $2}')
+        [ -n "$ip" ] && { echo "$ip"; return; }
+    }
+    local last_line=$(last -i -1 2>/dev/null | head -1)
+    [ -n "$last_line" ] && {
+        local ip=$(echo "$last_line" | awk '{print $3}')
+        [ -n "$ip" ] && [ "$ip" != "0.0.0.0" ] && { echo "$ip"; return; }
+    }
+    echo "未知"
+}
+
+# 显示系统信息（包含双栈IP）
 show_system_info() {
     clear
     printf "%b\n" "${BLUE}╔══════════════════════════════════════════════╗${NC}"
@@ -139,10 +191,11 @@ show_system_info() {
     MEM_TOTAL=$(free -h 2>/dev/null | awk '/^Mem:/{print $2}' || echo "未知")
     MEM_USED=$(free -h 2>/dev/null | awk '/^Mem:/{print $3}' || echo "未知")
     DISK_INFO=$(df -h / 2>/dev/null | awk 'NR==2{print $3"/"$2" ("$5")"}' || echo "未知")
-    IPV4=$(curl -s4 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "未知")
-    CLIENT_IP=$(echo "$SSH_CONNECTION" | awk '{print $1}')
-    [ -z "$CLIENT_IP" ] && CLIENT_IP=$(echo "$SSH_CLIENT" | awk '{print $1}')
-    [ -z "$CLIENT_IP" ] && CLIENT_IP="本地/未知"
+    IPV4=$(get_public_ipv4)
+    [ -z "$IPV4" ] && IPV4="无"
+    IPV6=$(get_public_ipv6)
+    [ -z "$IPV6" ] && IPV6="无"
+    CLIENT_IP=$(get_client_ip)
     CURRENT_HOST=$(hostname)
     CURRENT_SSH=$(show_current_port)
     CURRENT_TZ=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "未知")
@@ -156,7 +209,8 @@ show_system_info() {
     printf "%b\n" "  ${ICON_INFO} CPU     : ${GREEN}${CPU_MODEL} (${CPU_CORES} 核)${NC}"
     printf "%b\n" "  ${ICON_INFO} 内存    : ${GREEN}${MEM_USED} / ${MEM_TOTAL}${NC}"
     printf "%b\n" "  ${ICON_INFO} 磁盘    : ${GREEN}${DISK_INFO}${NC}"
-    printf "%b\n" "  ${ICON_INFO} 公网IP  : ${GREEN}${IPV4}${NC}"
+    printf "%b\n" "  ${ICON_IPV4} IPv4    : ${GREEN}${IPV4}${NC}"
+    printf "%b\n" "  ${ICON_IPV6} IPv6    : ${GREEN}${IPV6}${NC}"
     printf "%b\n" "  ${ICON_CLIENT} 连接IP  : ${GREEN}${CLIENT_IP}${NC}"
     printf "%b\n" "  ${ICON_HOST} 主机名  : ${YELLOW}${CURRENT_HOST}${NC}"
     printf "%b\n" "  ${ICON_PORT} SSH端口 : ${YELLOW}${CURRENT_SSH}${NC}"
@@ -296,22 +350,19 @@ extended_features() {
     done
 }
 
-#-------- 快捷命令安装 --------
 install_vps_shortcut() {
-    if confirm "  ${CYAN}➤${NC} 是否创建快捷命令 vps (下次直接输入 vps 运行本脚本)?" "N"; then
+    if confirm "  ${CYAN}➤${NC} 是否创建快捷命令 vps?" "N"; then
         local target="/usr/local/bin/vps"
-        # 判断脚本自身路径
         if [ -f "$0" ] && [ "$0" != "bash" ] && [ "$0" != "/dev/fd/63" ]; then
             cp "$0" "$target"
         else
-            # 从 GitHub 下载最新版
             curl -sL "https://raw.githubusercontent.com/GDLiBai/vps/main/vps_init.sh" -o "$target"
         fi
         chmod +x "$target" 2>/dev/null
         if [ -x "$target" ]; then
-            ok "快捷命令已创建，下次输入 ${GREEN}vps${NC} 即可运行本脚本"
+            ok "快捷命令已创建，输入 ${GREEN}vps${NC} 即可运行"
         else
-            warn "快捷命令创建失败，请手动设置"
+            warn "快捷命令创建失败"
         fi
     fi
 }
@@ -327,7 +378,7 @@ main() {
 
     clear
     printf "%b\n" "${BLUE}╔══════════════════════════════════════════════╗${NC}"
-    printf "%b\n" "${BLUE}║${NC}    ${ICON_ROCKET} VPS 一键初始化脚本 v4.1 优化版${NC}         ${BLUE}║${NC}"
+    printf "%b\n" "${BLUE}║${NC}    ${ICON_ROCKET} VPS 一键初始化脚本 v4.3 全面版${NC}         ${BLUE}║${NC}"
     printf "%b\n" "${BLUE}╚══════════════════════════════════════════════╝${NC}"
 
     #---- 1. 主机名 ----
@@ -339,7 +390,7 @@ main() {
         validate_hostname "$NEW_HOSTNAME" && break
     done
 
-    # 时区预设（香港）
+    # 时区预设
     TIMEZONE="Asia/Hong_Kong"
     printf "\n%b\n" "${CYAN}┌────────────────────────────────────────┐${NC}"
     printf "%b\n" "${CYAN}│${NC}  ${ICON_CLOCK} 时区已预设为: ${GREEN}${TIMEZONE}${NC}"
@@ -411,7 +462,7 @@ main() {
     printf "%b\n" "${CYAN}│${NC}  ${ICON_ROCKET} 正在执行基础配置...            ${CYAN}│${NC}"
     printf "%b\n" "${CYAN}└────────────────────────────────────────┘${NC}"
 
-    # 1. 主机名
+    # 主机名
     OLD_HOSTNAME=$(hostname)
     hostnamectl set-hostname "$NEW_HOSTNAME" 2>/dev/null || hostname "$NEW_HOSTNAME" 2>/dev/null || true
     echo "$NEW_HOSTNAME" > /etc/hostname
@@ -419,11 +470,11 @@ main() {
     grep -q "$NEW_HOSTNAME" /etc/hosts || echo "127.0.1.1 $NEW_HOSTNAME" >> /etc/hosts
     ok "主机名: ${GREEN}$OLD_HOSTNAME${NC} → ${GREEN}$NEW_HOSTNAME${NC}"
 
-    # 2. 时区
+    # 时区
     timedatectl set-timezone "$TIMEZONE" 2>/dev/null || ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime 2>/dev/null || true
     ok "时区已设置为: ${GREEN}$TIMEZONE${NC}"
 
-    # 3. 用户
+    # 用户
     useradd -m -s /bin/bash "$NEW_USER" 2>/dev/null || adduser -D -s /bin/bash "$NEW_USER" 2>/dev/null || true
     echo "$NEW_USER:$USER_PASS" | chpasswd 2>/dev/null || passwd "$NEW_USER" <<< "$USER_PASS"$'\n'"$USER_PASS" 2>/dev/null || true
     getent group sudo &>/dev/null && usermod -aG sudo "$NEW_USER" 2>/dev/null
@@ -437,7 +488,7 @@ main() {
         ok "sudo 权限已授予 (需密码)"
     fi
 
-    # 4. SSH
+    # SSH
     SSH_SERVICE=$(detect_ssh_service)
     SSHD_CONFIG="/etc/ssh/sshd_config"
     [ -f "$SSHD_CONFIG" ] || SSHD_CONFIG="/etc/ssh/ssh_config"
@@ -470,14 +521,15 @@ main() {
     # 扩展功能
     extended_features
 
-    # 快捷命令创建
+    # 快捷命令
     install_vps_shortcut
 
-    # 完成画面
-    IP_ADDR=$(curl -s4 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "未知")
-    CLIENT_IP_END=$(echo "$SSH_CONNECTION" | awk '{print $1}')
-    [ -z "$CLIENT_IP_END" ] && CLIENT_IP_END=$(echo "$SSH_CLIENT" | awk '{print $1}')
-    [ -z "$CLIENT_IP_END" ] && CLIENT_IP_END="本地/未知"
+    # 完成画面（显示双栈IP）
+    IPV4=$(get_public_ipv4)
+    [ -z "$IPV4" ] && IPV4="无"
+    IPV6=$(get_public_ipv6)
+    [ -z "$IPV6" ] && IPV6="无"
+    CLIENT_IP_END=$(get_client_ip)
 
     clear
     printf "%b\n" "${GREEN}╔══════════════════════════════════════════════╗${NC}"
@@ -488,11 +540,15 @@ main() {
     printf "%b\n" "${GREEN}║${NC}  ${ICON_USER} 用户   : ${WHITE}$NEW_USER${NC}"
     printf "%b\n" "${GREEN}║${NC}  ${ICON_PORT} SSH端口: ${WHITE}$NEW_PORT${NC} ${YELLOW}(原:$CURRENT_PORT)${NC}"
     printf "%b\n" "${GREEN}║${NC}  ${ICON_LOCK} root登录: ${RED}已禁止${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${ICON_INFO} 服务器IP: ${WHITE}$IP_ADDR${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${ICON_CLIENT} 当前连接: ${WHITE}$CLIENT_IP_END${NC}"
+    printf "%b\n" "${GREEN}║${NC}  ${ICON_IPV4} 服务器IPv4: ${WHITE}$IPV4${NC}"
+    printf "%b\n" "${GREEN}║${NC}  ${ICON_IPV6} 服务器IPv6: ${WHITE}$IPV6${NC}"
+    printf "%b\n" "${GREEN}║${NC}  ${ICON_CLIENT} 当前连接  : ${WHITE}$CLIENT_IP_END${NC}"
     printf "%b\n" "${GREEN}╠══════════════════════════════════════════════╣${NC}"
     printf "%b\n" "${GREEN}║${NC}  ${ICON_WARN} ${YELLOW}立即测试新连接 (不要关闭当前会话):${NC}     ${GREEN}║${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${WHITE}ssh -p $NEW_PORT $NEW_USER@$IP_ADDR${NC}"
+    printf "%b\n" "${GREEN}║${NC}  ${WHITE}ssh -p $NEW_PORT $NEW_USER@$IPV4${NC}                 ${GREEN}║${NC}"
+    if [ "$IPV6" != "无" ]; then
+        printf "%b\n" "${GREEN}║${NC}  ${WHITE}ssh -p $NEW_PORT $NEW_USER@$IPV6${NC}          ${GREEN}║${NC}"
+    fi
     printf "%b\n" "${GREEN}║${NC}  ${ICON_INFO} 备份: ${WHITE}$BACKUP_DIR${NC}"
     printf "%b\n" "${GREEN}║${NC}  ${ICON_INFO} 日志: ${WHITE}$LOG_FILE${NC}"
     printf "%b\n" "${GREEN}╚══════════════════════════════════════════════╝${NC}"
