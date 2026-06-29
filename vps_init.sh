@@ -1,8 +1,7 @@
 #!/bin/bash
 #==================================================
-# VPS 一键初始化 & 管理脚本 v3.0.3
-# 修复：颜色显示问题
-# 时区：Asia/Hong_Kong
+# VPS 一键初始化 & 管理脚本 v3.0.4
+# 修复：颜色变量使用真正的转义字符
 #==================================================
 set -o pipefail
 
@@ -10,10 +9,15 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 LOG_FILE="/var/log/vps_init_$(date +%Y%m%d_%H%M%S).log"
 BACKUP_DIR="/root/vps_backup_$(date +%Y%m%d_%H%M%S)"
 
-#-------- 颜色 --------
+#-------- 颜色（使用 $'...' 确保 ESC 字符）--------
 if [ -t 1 ]; then
-    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-    BLUE='\033[0;34m'; CYAN='\033[0;36m'; WHITE='\033[1;37m'; NC='\033[0m'
+    RED=$'\033[0;31m'
+    GREEN=$'\033[0;32m'
+    YELLOW=$'\033[1;33m'
+    BLUE=$'\033[0;34m'
+    CYAN=$'\033[0;36m'
+    WHITE=$'\033[1;37m'
+    NC=$'\033[0m'
 else
     RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; WHITE=''; NC=''
 fi
@@ -25,19 +29,19 @@ ICON_SWAP="💾"; ICON_CLIENT="🔗"; ICON_IPV4="🌐"; ICON_IPV6="🌏"
 ICON_CPU="🧠"; ICON_DISK="💿"; ICON_AUTO="🔄"; ICON_MENU="📋"
 ICON_TRASH="🗑️"
 
-# ★ 修复：print_row 用 echo -e 解析颜色 ★
+# 输出函数：直接 echo，无需 -e（颜色已为真实 ESC）
 print_row() {
     printf "  %-12s " "$1"
-    echo -e "$2"
+    echo "$2"
 }
 
-log()        { echo -e "$(date '+%H:%M:%S') $*" | tee -a "$LOG_FILE"; }
-ok()         { log "  ${ICON_OK} $*"; }
-warn()       { log "  ${ICON_WARN} $*"; }
-err()        { log "  ${ICON_ERR} $*"; exit 1; }
+log()   { echo "$(date '+%H:%M:%S') ${ICON_OK} $*" | tee -a "$LOG_FILE"; }
+ok()    { log "  ${ICON_OK} $*"; }
+warn()  { log "  ${ICON_WARN} $*"; }
+err()   { log "  ${ICON_ERR} $*"; exit 1; }
 
 check_root() {
-    [ "$EUID" -eq 0 ] || { echo -e "${RED}${ICON_ERR} 请使用root运行${NC}"; exit 1; }
+    [ "$EUID" -eq 0 ] || { echo "${RED}${ICON_ERR} 请使用root运行${NC}"; exit 1; }
 }
 
 detect_pkg_manager() {
@@ -72,7 +76,7 @@ confirm() {
         case "$input" in
             [Yy]*) return 0 ;;
             [Nn]*) return 1 ;;
-            *) echo -e "${YELLOW}请输入 Y 或 N${NC}" ;;
+            *) echo "${YELLOW}请输入 Y 或 N${NC}" ;;
         esac
     done
 }
@@ -84,7 +88,7 @@ read_nonempty() {
         read input
         input=$(echo "$input" | xargs)
         if [ -n "$input" ]; then eval "$var_name=\"$input\""; return; fi
-        echo -e "${YELLOW}输入不能为空${NC}"
+        echo "${YELLOW}输入不能为空${NC}"
     done
 }
 
@@ -173,9 +177,9 @@ get_client_ip() {
 
 show_system_info() {
     clear
-    echo -e "${BLUE}════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}              📋 当前系统配置${NC}"
-    echo -e "${BLUE}════════════════════════════════════════════════${NC}"
+    echo "${BLUE}════════════════════════════════════════════════${NC}"
+    echo "${BLUE}              📋 当前系统配置${NC}"
+    echo "${BLUE}════════════════════════════════════════════════${NC}"
 
     if [ -f /etc/os-release ]; then . /etc/os-release; OS_NAME="${PRETTY_NAME:-$NAME $VERSION}"; else OS_NAME="未知"; fi
     KERNEL="$(uname -r) ($(uname -m))"
@@ -217,17 +221,17 @@ show_system_info() {
 manage_users_menu() {
     while true; do
         clear
-        echo -e "${CYAN}════════════════════════════════════════════════${NC}"
-        echo -e "${CYAN}              👤 用户管理${NC}"
-        echo -e "${CYAN}════════════════════════════════════════════════${NC}"
+        echo "${CYAN}════════════════════════════════════════════════${NC}"
+        echo "${CYAN}              👤 用户管理${NC}"
+        echo "${CYAN}════════════════════════════════════════════════${NC}"
         echo ""
-        echo -e "  ${WHITE}现有用户:${NC}"
+        echo "  ${WHITE}现有用户:${NC}"
         awk -F: '($3>=1000 && $7 !~ /nologin|false/){printf "    %-15s (UID:%s)\n", $1, $3}' /etc/passwd
         echo ""
-        echo -e "  ${GREEN}1${NC}) 新建用户"
-        echo -e "  ${GREEN}2${NC}) 修改用户密码"
-        echo -e "  ${GREEN}3${NC}) 删除用户"
-        echo -e "  ${GREEN}0${NC}) 返回"
+        echo "  ${GREEN}1${NC}) 新建用户"
+        echo "  ${GREEN}2${NC}) 修改用户密码"
+        echo "  ${GREEN}3${NC}) 删除用户"
+        echo "  ${GREEN}0${NC}) 返回"
         echo ""
         echo -ne "  ${CYAN}➤${NC} 请选择 [0]: "
         read CHOICE
@@ -294,11 +298,11 @@ delete_user() {
 
 self_destruct() {
     echo ""
-    echo -e "  ${RED}${ICON_WARN} 警告：此操作将删除脚本及所有相关文件！${NC}"
-    echo -e "  ${YELLOW}（不会撤销已修改的系统配置）${NC}"
+    echo "  ${RED}${ICON_WARN} 警告：此操作将删除脚本及所有相关文件！${NC}"
+    echo "  ${YELLOW}（不会撤销已修改的系统配置）${NC}"
     echo ""
     if ! confirm "  确认删除脚本?" "N"; then
-        echo -e "  ${ICON_INFO} 已取消"
+        echo "  ${ICON_INFO} 已取消"
         read -rp "  按回车键返回..." dummy
         return
     fi
@@ -307,7 +311,7 @@ self_destruct() {
     rm -rf /root/vps_backup_* 2>/dev/null && ok "已清理备份文件"
     rm -f /var/log/vps_init_*.log 2>/dev/null && ok "已清理日志文件"
     echo ""
-    echo -e "  ${ICON_DONE} ${GREEN}脚本已完全删除，退出...${NC}"
+    echo "  ${ICON_DONE} ${GREEN}脚本已完全删除，退出...${NC}"
     echo ""
     SCRIPT_PATH="$(readlink -f "$0")"
     rm -f /root/vps_init.sh 2>/dev/null
@@ -318,17 +322,17 @@ self_destruct() {
 management_menu() {
     while true; do
         clear
-        echo -e "${BLUE}════════════════════════════════════════════════${NC}"
-        echo -e "${BLUE}              📋 VPS 管理菜单${NC}"
-        echo -e "${BLUE}════════════════════════════════════════════════${NC}"
+        echo "${BLUE}════════════════════════════════════════════════${NC}"
+        echo "${BLUE}              📋 VPS 管理菜单${NC}"
+        echo "${BLUE}════════════════════════════════════════════════${NC}"
         echo ""
-        echo -e "  ${GREEN}1${NC}) ${ICON_HOST} 修改主机名"
-        echo -e "  ${GREEN}2${NC}) ${ICON_USER} 管理用户 (新建/修改/删除)"
-        echo -e "  ${GREEN}3${NC}) ${ICON_PORT} 修改 SSH 端口"
-        echo -e "  ${GREEN}4${NC}) ${ICON_SWAP} 创建 Swap 虚拟内存"
-        echo -e "  ${GREEN}5${NC}) ${ICON_INFO} 查看系统信息"
-        echo -e "  ${RED}9${NC}) ${RED}${ICON_TRASH} 删除此脚本${NC}"
-        echo -e "  ${GREEN}0${NC}) 退出"
+        echo "  ${GREEN}1${NC}) ${ICON_HOST} 修改主机名"
+        echo "  ${GREEN}2${NC}) ${ICON_USER} 管理用户 (新建/修改/删除)"
+        echo "  ${GREEN}3${NC}) ${ICON_PORT} 修改 SSH 端口"
+        echo "  ${GREEN}4${NC}) ${ICON_SWAP} 创建 Swap 虚拟内存"
+        echo "  ${GREEN}5${NC}) ${ICON_INFO} 查看系统信息"
+        echo "  ${RED}9${NC}) ${RED}${ICON_TRASH} 删除此脚本${NC}"
+        echo "  ${GREEN}0${NC}) 退出"
         echo ""
         echo -ne "  ${CYAN}➤${NC} 请选择 [0]: "
         read CHOICE
@@ -454,12 +458,12 @@ main() {
     show_system_info
 
     clear
-    echo -e "${BLUE}════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}     🚀 VPS 一键初始化脚本 v3.0.3${NC}"
-    echo -e "${BLUE}════════════════════════════════════════════════${NC}"
+    echo "${BLUE}════════════════════════════════════════════════${NC}"
+    echo "${BLUE}     🚀 VPS 一键初始化脚本 v3.0.4${NC}"
+    echo "${BLUE}════════════════════════════════════════════════${NC}"
 
     echo -e "\n  ${ICON_HOST} 步骤 1/3 · 设置主机名"
-    echo -e "  ${CYAN}────────────────────────────────────────${NC}"
+    echo "  ${CYAN}────────────────────────────────────────${NC}"
     while true; do
         read_nonempty "  新主机名: " NEW_HOSTNAME
         validate_hostname "$NEW_HOSTNAME" && break
@@ -469,7 +473,7 @@ main() {
     echo -e "\n  ${ICON_CLOCK} 时区已预设: ${GREEN}${TIMEZONE}${NC}"
 
     echo -e "\n  ${ICON_USER} 步骤 2/3 · 创建管理员用户 (sudo需密码)"
-    echo -e "  ${CYAN}────────────────────────────────────────${NC}"
+    echo "  ${CYAN}────────────────────────────────────────${NC}"
     while true; do
         read_nonempty "  用户名: " NEW_USER
         validate_username "$NEW_USER" && break
@@ -484,7 +488,7 @@ main() {
     done
 
     echo -e "\n  ${ICON_PORT} 步骤 3/3 · 设置 SSH 端口"
-    echo -e "  ${CYAN}────────────────────────────────────────${NC}"
+    echo "  ${CYAN}────────────────────────────────────────${NC}"
     CURRENT_PORT=$(show_current_port)
     RANDOM_PORT=$(generate_random_port)
     echo "  当前端口: ${YELLOW}$CURRENT_PORT${NC}  随机推荐: ${GREEN}$RANDOM_PORT${NC}"
@@ -492,36 +496,36 @@ main() {
         echo -ne "  新端口 [随机:$RANDOM_PORT]: "
         read PORT_INPUT
         PORT_INPUT=$(echo "$PORT_INPUT" | xargs)
-        if [ -z "$PORT_INPUT" ]; then NEW_PORT=$RANDOM_PORT; echo -e "  ${GREEN}→ 随机端口: $NEW_PORT${NC}"; break; fi
+        if [ -z "$PORT_INPUT" ]; then NEW_PORT=$RANDOM_PORT; echo "  ${GREEN}→ 随机端口: $NEW_PORT${NC}"; break; fi
         [[ "$PORT_INPUT" =~ ^[0-9]+$ ]] || { warn "端口必须是数字"; continue; }
         [ "$PORT_INPUT" -ge 1024 ] && [ "$PORT_INPUT" -le 65535 ] || { warn "范围: 1024-65535"; continue; }
         if ss -tlnp 2>/dev/null | grep -q ":$PORT_INPUT "; then
             warn "端口 $PORT_INPUT 已被占用"
             if confirm "  仍要使用?" "N"; then NEW_PORT=$PORT_INPUT; break
-            else RANDOM_PORT=$(generate_random_port); echo -e "  ${GREEN}→ 新推荐: $RANDOM_PORT${NC}"; continue; fi
+            else RANDOM_PORT=$(generate_random_port); echo "  ${GREEN}→ 新推荐: $RANDOM_PORT${NC}"; continue; fi
         fi
         NEW_PORT=$PORT_INPUT
         break
     done
 
     clear
-    echo -e "${BLUE}════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}              📋 配置确认${NC}"
-    echo -e "${BLUE}════════════════════════════════════════════════${NC}"
+    echo "${BLUE}════════════════════════════════════════════════${NC}"
+    echo "${BLUE}              📋 配置确认${NC}"
+    echo "${BLUE}════════════════════════════════════════════════${NC}"
     print_row "${ICON_HOST} 主机名"   "${GREEN}$NEW_HOSTNAME${NC}"
     print_row "${ICON_CLOCK} 时区"     "${GREEN}$TIMEZONE${NC}"
     print_row "${ICON_USER} 用户"     "${GREEN}$NEW_USER${NC} ${YELLOW}(sudo需密码)${NC}"
     print_row "${ICON_PORT} SSH端口"  "${GREEN}$NEW_PORT${NC} ${YELLOW}(原:$CURRENT_PORT)${NC}"
     print_row "${ICON_LOCK} root登录" "${RED}将被禁止${NC}"
     print_row "${ICON_AUTO} 自动更新" "${GREEN}默认启用${NC}"
-    echo -e "${BLUE}════════════════════════════════════════════════${NC}"
+    echo "${BLUE}════════════════════════════════════════════════${NC}"
 
     if ! confirm "  确认执行?" "N"; then echo -e "\n  ${ICON_WARN} 已取消\n"; exit 0; fi
 
     clear
-    echo -e "${CYAN}════════════════════════════════════════════════${NC}"
-    echo -e "${CYAN}     🚀 正在执行配置...${NC}"
-    echo -e "${CYAN}════════════════════════════════════════════════${NC}"
+    echo "${CYAN}════════════════════════════════════════════════${NC}"
+    echo "${CYAN}     🚀 正在执行配置...${NC}"
+    echo "${CYAN}════════════════════════════════════════════════${NC}"
 
     OLD_HOSTNAME=$(hostname)
     hostnamectl set-hostname "$NEW_HOSTNAME" 2>/dev/null || hostname "$NEW_HOSTNAME" 2>/dev/null || true
@@ -571,9 +575,9 @@ main() {
     CLIENT_IP_END=$(get_client_ip)
 
     clear
-    echo -e "${GREEN}════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}              🎉 初始化完成！${NC}"
-    echo -e "${GREEN}════════════════════════════════════════════════${NC}"
+    echo "${GREEN}════════════════════════════════════════════════${NC}"
+    echo "${GREEN}              🎉 初始化完成！${NC}"
+    echo "${GREEN}════════════════════════════════════════════════${NC}"
     print_row "${ICON_HOST} 主机名"   "${WHITE}$NEW_HOSTNAME${NC}"
     print_row "${ICON_CLOCK} 时区"     "${WHITE}$TIMEZONE${NC}"
     print_row "${ICON_USER} 用户"     "${WHITE}$NEW_USER${NC} ${YELLOW}(sudo需密码)${NC}"
@@ -582,12 +586,12 @@ main() {
     print_row "${ICON_IPV4} IPv4"     "${WHITE}$IPV4${NC}"
     print_row "${ICON_IPV6} IPv6"     "${WHITE}$IPV6${NC}"
     print_row "${ICON_CLIENT} 连接IP"  "${WHITE}$CLIENT_IP_END${NC}"
-    echo -e "${GREEN}────────────────────────────────────────────────${NC}"
-    echo -e "  ${ICON_WARN} ${YELLOW}立即测试新连接:${NC}"
-    echo -e "  ${WHITE}ssh -p $NEW_PORT $NEW_USER@$IPV4${NC}"
-    [ "$IPV6" != "无" ] && echo -e "  ${WHITE}ssh -p $NEW_PORT $NEW_USER@$IPV6${NC}"
-    echo -e "  ${ICON_MENU} 输入 ${WHITE}vps${NC} 打开管理菜单"
-    echo -e "${GREEN}════════════════════════════════════════════════${NC}"
+    echo "${GREEN}────────────────────────────────────────────────${NC}"
+    echo "  ${ICON_WARN} ${YELLOW}立即测试新连接:${NC}"
+    echo "  ${WHITE}ssh -p $NEW_PORT $NEW_USER@$IPV4${NC}"
+    [ "$IPV6" != "无" ] && echo "  ${WHITE}ssh -p $NEW_PORT $NEW_USER@$IPV6${NC}"
+    echo "  ${ICON_MENU} 输入 ${WHITE}vps${NC} 打开管理菜单"
+    echo "${GREEN}════════════════════════════════════════════════${NC}"
     echo ""
 
     management_menu
