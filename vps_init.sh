@@ -1,7 +1,7 @@
 #!/bin/bash
 #==================================================
-# VPS 一键初始化 & 管理脚本 v3.0.2
-# 新增：脚本自毁功能
+# VPS 一键初始化 & 管理脚本 v3.0.3
+# 修复：颜色显示问题
 # 时区：Asia/Hong_Kong
 #==================================================
 set -o pipefail
@@ -25,8 +25,12 @@ ICON_SWAP="💾"; ICON_CLIENT="🔗"; ICON_IPV4="🌐"; ICON_IPV6="🌏"
 ICON_CPU="🧠"; ICON_DISK="💿"; ICON_AUTO="🔄"; ICON_MENU="📋"
 ICON_TRASH="🗑️"
 
-#-------- 输出函数 --------
-print_row()  { printf "  %-12s %s\n" "$1" "$2"; }
+# ★ 修复：print_row 用 echo -e 解析颜色 ★
+print_row() {
+    printf "  %-12s " "$1"
+    echo -e "$2"
+}
+
 log()        { echo -e "$(date '+%H:%M:%S') $*" | tee -a "$LOG_FILE"; }
 ok()         { log "  ${ICON_OK} $*"; }
 warn()       { log "  ${ICON_WARN} $*"; }
@@ -167,7 +171,6 @@ get_client_ip() {
     echo "未知"
 }
 
-# ★ 系统信息
 show_system_info() {
     clear
     echo -e "${BLUE}════════════════════════════════════════════════${NC}"
@@ -211,7 +214,6 @@ show_system_info() {
     read -rp "  按回车键继续..." dummy
 }
 
-# ★ 用户管理菜单
 manage_users_menu() {
     while true; do
         clear
@@ -290,7 +292,6 @@ delete_user() {
     fi
 }
 
-# ★ 脚本自毁
 self_destruct() {
     echo ""
     echo -e "  ${RED}${ICON_WARN} 警告：此操作将删除脚本及所有相关文件！${NC}"
@@ -302,25 +303,18 @@ self_destruct() {
         return
     fi
     echo ""
-    # 删除快捷命令
-    if [ -f /usr/local/bin/vps ]; then
-        rm -f /usr/local/bin/vps && ok "已删除 /usr/local/bin/vps"
-    fi
-    # 删除备份
+    if [ -f /usr/local/bin/vps ]; then rm -f /usr/local/bin/vps && ok "已删除 /usr/local/bin/vps"; fi
     rm -rf /root/vps_backup_* 2>/dev/null && ok "已清理备份文件"
-    # 删除日志
     rm -f /var/log/vps_init_*.log 2>/dev/null && ok "已清理日志文件"
     echo ""
     echo -e "  ${ICON_DONE} ${GREEN}脚本已完全删除，退出...${NC}"
     echo ""
-    # 删除脚本自身（放在最后）
     SCRIPT_PATH="$(readlink -f "$0")"
     rm -f /root/vps_init.sh 2>/dev/null
     rm -f "$SCRIPT_PATH" 2>/dev/null
     exit 0
 }
 
-# ★ 管理菜单
 management_menu() {
     while true; do
         clear
@@ -461,10 +455,9 @@ main() {
 
     clear
     echo -e "${BLUE}════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}     🚀 VPS 一键初始化脚本 v3.0.2${NC}"
+    echo -e "${BLUE}     🚀 VPS 一键初始化脚本 v3.0.3${NC}"
     echo -e "${BLUE}════════════════════════════════════════════════${NC}"
 
-    # 1. 主机名
     echo -e "\n  ${ICON_HOST} 步骤 1/3 · 设置主机名"
     echo -e "  ${CYAN}────────────────────────────────────────${NC}"
     while true; do
@@ -475,7 +468,6 @@ main() {
     TIMEZONE="Asia/Hong_Kong"
     echo -e "\n  ${ICON_CLOCK} 时区已预设: ${GREEN}${TIMEZONE}${NC}"
 
-    # 2. 新用户
     echo -e "\n  ${ICON_USER} 步骤 2/3 · 创建管理员用户 (sudo需密码)"
     echo -e "  ${CYAN}────────────────────────────────────────${NC}"
     while true; do
@@ -491,7 +483,6 @@ main() {
         [ "$USER_PASS" = "$USER_PASS2" ] && break || warn "两次不一致"
     done
 
-    # 3. SSH端口
     echo -e "\n  ${ICON_PORT} 步骤 3/3 · 设置 SSH 端口"
     echo -e "  ${CYAN}────────────────────────────────────────${NC}"
     CURRENT_PORT=$(show_current_port)
@@ -513,7 +504,6 @@ main() {
         break
     done
 
-    # 确认
     clear
     echo -e "${BLUE}════════════════════════════════════════════════${NC}"
     echo -e "${BLUE}              📋 配置确认${NC}"
@@ -528,7 +518,6 @@ main() {
 
     if ! confirm "  确认执行?" "N"; then echo -e "\n  ${ICON_WARN} 已取消\n"; exit 0; fi
 
-    # 执行
     clear
     echo -e "${CYAN}════════════════════════════════════════════════${NC}"
     echo -e "${CYAN}     🚀 正在执行配置...${NC}"
