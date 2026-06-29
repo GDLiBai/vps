@@ -1,7 +1,7 @@
 #!/bin/bash
 #==================================================
-# VPS 一键安全初始化脚本 v2.1.0
-# 简化版：自动安全更新默认启用，流程更简洁
+# VPS 一键安全初始化脚本 v2.2.0
+# 新用户默认需密码sudo | 管理菜单 | vps快捷键
 # 时区：Asia/Hong_Kong
 #==================================================
 set -o pipefail
@@ -21,10 +21,8 @@ fi
 ICON_OK="✅"; ICON_ERR="❌"; ICON_WARN="⚠️"; ICON_INFO="📌"
 ICON_ROCKET="🚀"; ICON_LOCK="🔒"; ICON_USER="👤"; ICON_HOST="🖥️"
 ICON_CLOCK="🕐"; ICON_PORT="🔌"; ICON_DONE="🎉"; ICON_PKG="📦"
-ICON_SWAP="💾"; ICON_BBR="⚡"; ICON_F2B="🛡️"; ICON_MON="📊"
-ICON_FW="🔥"; ICON_HARD="🧹"; ICON_CLIENT="🔗"
-ICON_IPV4="🌐"; ICON_IPV6="🌏"; ICON_CPU="🧠"; ICON_DISK="💿"
-ICON_AUTO="🔄"
+ICON_SWAP="💾"; ICON_CLIENT="🔗"; ICON_IPV4="🌐"; ICON_IPV6="🌏"
+ICON_CPU="🧠"; ICON_DISK="💿"; ICON_AUTO="🔄"; ICON_MENU="📋"
 
 #-------- 工具函数 --------
 log()    { printf "%s %b\n" "$(date '+%H:%M:%S')" "$*" | tee -a "$LOG_FILE"; }
@@ -102,20 +100,16 @@ validate_username() {
     local u="$1" r
     local reserved=(root bin daemon adm lp sync shutdown halt mail news uucp operator games gopher ftp nobody)
     for r in "${reserved[@]}"; do [ "$u" = "$r" ] && { warn "系统保留用户: $u"; return 1; }; done
-    id "$u" &>/dev/null && { warn "用户 $u 已存在，请使用其他用户名"; return 1; }
+    id "$u" &>/dev/null && { warn "用户 $u 已存在"; return 1; }
     [[ "$u" =~ ^[a-z_][a-z0-9_-]*$ ]] || { warn "用户名格式错误"; return 1; }
     return 0
 }
 
 safe_sed() {
     local f="$1" p="$2" r="$3"
-    if grep -q "^${p}" "$f" 2>/dev/null; then
-        sed -i "s/^${p}.*/${r}/" "$f"
-    elif grep -q "^#${p}" "$f" 2>/dev/null; then
-        sed -i "s/^#${p}.*/${r}/" "$f"
-    else
-        echo "$r" >> "$f"
-    fi
+    if grep -q "^${p}" "$f" 2>/dev/null; then sed -i "s/^${p}.*/${r}/" "$f"
+    elif grep -q "^#${p}" "$f" 2>/dev/null; then sed -i "s/^#${p}.*/${r}/" "$f"
+    else echo "$r" >> "$f"; fi
 }
 
 detect_ssh_service() {
@@ -136,54 +130,41 @@ verify_ssh_port() {
 }
 
 restart_ssh_safe() {
-    local svc="$1" new_port="$2" backup="$3" SSHD_CONFIG="$4"
-    local success=false
-
+    local svc="$1" new_port="$2" backup="$3" SSHD_CONFIG="$4" success=false
     if systemctl restart "$svc" 2>/dev/null; then success=true
     elif service "$svc" restart 2>/dev/null; then success=true
     elif service ssh restart 2>/dev/null; then success=true
     elif service sshd restart 2>/dev/null; then success=true
     fi
-
     if ! $success; then
-        warn "SSH 服务重启失败，正在恢复配置..."
+        warn "SSH 服务重启失败，恢复配置..."
         cp "$backup" "$SSHD_CONFIG" 2>/dev/null
         systemctl restart "$svc" 2>/dev/null || service ssh restart 2>/dev/null || true
         err "已恢复原配置"
     fi
-
     if ! verify_ssh_port "$new_port"; then
-        warn "新端口 $new_port 未在 ${max_wait} 秒内监听，正在恢复..."
+        warn "新端口 $new_port 未监听，恢复..."
         cp "$backup" "$SSHD_CONFIG" 2>/dev/null
         systemctl restart "$svc" 2>/dev/null || service ssh restart 2>/dev/null || true
-        err "已恢复原配置，新端口可能被占用"
+        err "已恢复原配置"
     fi
 }
 
 get_public_ipv4() {
-    curl -s4 --max-time 3 ifconfig.me 2>/dev/null || \
-    curl -s4 --max-time 3 icanhazip.com 2>/dev/null || \
-    hostname -I 2>/dev/null | awk '{print $1}'
+    curl -s4 --max-time 3 ifconfig.me 2>/dev/null || curl -s4 --max-time 3 icanhazip.com 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}'
 }
 
 get_public_ipv6() {
-    curl -s6 --max-time 3 ifconfig.me 2>/dev/null || \
-    curl -s6 --max-time 3 icanhazip.com 2>/dev/null
+    curl -s6 --max-time 3 ifconfig.me 2>/dev/null || curl -s6 --max-time 3 icanhazip.com 2>/dev/null
 }
 
 get_client_ip() {
     [ -n "$SSH_CONNECTION" ] && { echo "$SSH_CONNECTION" | awk '{print $1}'; return; }
     [ -n "$SSH_CLIENT" ] && { echo "$SSH_CLIENT" | awk '{print $1}'; return; }
     local who_line=$(who -m 2>/dev/null)
-    [ -n "$who_line" ] && {
-        local ip=$(echo "$who_line" | awk -F'[()]' '{print $2}')
-        [ -n "$ip" ] && { echo "$ip"; return; }
-    }
+    [ -n "$who_line" ] && { local ip=$(echo "$who_line" | awk -F'[()]' '{print $2}'); [ -n "$ip" ] && { echo "$ip"; return; }; }
     local last_line=$(last -i -1 2>/dev/null | head -1)
-    [ -n "$last_line" ] && {
-        local ip=$(echo "$last_line" | awk '{print $3}')
-        [ -n "$ip" ] && [ "$ip" != "0.0.0.0" ] && { echo "$ip"; return; }
-    }
+    [ -n "$last_line" ] && { local ip=$(echo "$last_line" | awk '{print $3}'); [ -n "$ip" ] && [ "$ip" != "0.0.0.0" ] && { echo "$ip"; return; }; }
     echo "未知"
 }
 
@@ -192,12 +173,10 @@ show_system_info() {
     printf "%b\n" "${BLUE}╔══════════════════════════════════════════════╗${NC}"
     printf "%b\n" "${BLUE}║${NC}           ${WHITE}📋 当前系统配置${NC}                     ${BLUE}║${NC}"
     printf "%b\n" "${BLUE}╚══════════════════════════════════════════════╝${NC}"
-
     if [ -f /etc/os-release ]; then . /etc/os-release; OS_NAME="${PRETTY_NAME:-$NAME $VERSION}"; else OS_NAME="未知"; fi
     KERNEL="$(uname -r) ($(uname -m))"
     CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d':' -f2 | xargs || echo "未知")
     CPU_CORES=$(nproc 2>/dev/null || echo "未知")
-    CPU_INFO="${CPU_MODEL} (${CPU_CORES} 核)"
     if command -v free &>/dev/null; then
         read MEM_TOTAL MEM_USED MEM_AVAIL <<< $(free -h 2>/dev/null | awk '/^Mem:/{print $2, $3, $7}')
         [ -z "$MEM_TOTAL" ] && MEM_TOTAL="?"; [ -z "$MEM_USED" ] && MEM_USED="?"; [ -z "$MEM_AVAIL" ] && MEM_AVAIL="?"
@@ -215,10 +194,9 @@ show_system_info() {
     CURRENT_TZ=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "未知")
     SWAP_TOTAL=$(swapon --show=size 2>/dev/null | awk 'NR>1{sum+=$1} END{print sum}')
     [ -z "$SWAP_TOTAL" ] || [ "$SWAP_TOTAL" -eq 0 ] && SWAP_INFO="无" || SWAP_INFO="${SWAP_TOTAL}MB"
-
     printf "%b\n" "  ${ICON_INFO} 系统    : ${GREEN}${OS_NAME}${NC}"
     printf "%b\n" "  ${ICON_INFO} 内核    : ${GREEN}${KERNEL}${NC}"
-    printf "%b\n" "  ${ICON_CPU} CPU     : ${GREEN}${CPU_INFO}${NC}"
+    printf "%b\n" "  ${ICON_CPU} CPU     : ${GREEN}${CPU_MODEL} (${CPU_CORES} 核)${NC}"
     printf "%b\n" "  ${ICON_INFO} 内存    : ${GREEN}${MEM_INFO}${NC}"
     printf "%b\n" "  ${ICON_DISK} 磁盘    : ${GREEN}${DISK_INFO}${NC}"
     printf "%b\n" "  ${ICON_IPV4} IPv4    : ${GREEN}${IPV4}${NC}"
@@ -231,7 +209,122 @@ show_system_info() {
     read -rp "  按回车键开始初始化..." dummy
 }
 
-# ★ 自动安全更新（静默执行）
+# ★ 管理菜单（vps 快捷键调用）
+management_menu() {
+    while true; do
+        clear
+        printf "%b\n" "${BLUE}╔══════════════════════════════════════════════╗${NC}"
+        printf "%b\n" "${BLUE}║${NC}           ${WHITE}📋 VPS 管理菜单${NC}                     ${BLUE}║${NC}"
+        printf "%b\n" "${BLUE}╚══════════════════════════════════════════════╝${NC}"
+        echo ""
+        printf "%b\n" "  ${GREEN}1${NC}) ${ICON_HOST} 修改主机名"
+        printf "%b\n" "  ${GREEN}2${NC}) ${ICON_USER} 新建用户"
+        printf "%b\n" "  ${GREEN}3${NC}) ${ICON_PORT} 修改 SSH 端口"
+        printf "%b\n" "  ${GREEN}4${NC}) ${ICON_PKG} 安装基础软件包"
+        printf "%b\n" "  ${GREEN}5${NC}) ${ICON_SWAP} 创建 Swap"
+        printf "%b\n" "  ${GREEN}6${NC}) ${ICON_INFO} 查看系统信息"
+        printf "%b\n" "  ${GREEN}0${NC}) 退出"
+        echo ""
+        printf "%b" "  ${CYAN}➤${NC} 请选择 [0]: "
+        read CHOICE
+        CHOICE=${CHOICE:-0}
+        case $CHOICE in
+            1) change_hostname ;;
+            2) create_new_user ;;
+            3) change_ssh_port ;;
+            4) install_base_packages ;;
+            5) create_swap_menu ;;
+            6) show_system_info; read -rp "  按回车键返回..." dummy ;;
+            0) break ;;
+            *) warn "无效选项" ;;
+        esac
+    done
+}
+
+change_hostname() {
+    local new_host
+    while true; do
+        read_nonempty "  ${CYAN}➤${NC} 新主机名: " new_host
+        validate_hostname "$new_host" && break
+    done
+    local old_host=$(hostname)
+    hostnamectl set-hostname "$new_host" 2>/dev/null || hostname "$new_host" 2>/dev/null || true
+    echo "$new_host" > /etc/hostname
+    sed -i "s/\b${old_host}\b/${new_host}/g" /etc/hosts 2>/dev/null || true
+    grep -q "$new_host" /etc/hosts || echo "127.0.1.1 $new_host" >> /etc/hosts
+    ok "主机名: ${GREEN}$old_host${NC} → ${GREEN}$new_host${NC}"
+}
+
+create_new_user() {
+    local new_user user_pass user_pass2
+    while true; do
+        read_nonempty "  ${CYAN}➤${NC} 用户名: " new_user
+        validate_username "$new_user" && break
+    done
+    while true; do
+        printf "%b" "  ${CYAN}➤${NC} 密码 (至少6位): "
+        read -s user_pass; echo
+        [ ${#user_pass} -ge 6 ] || { warn "长度不足6位"; continue; }
+        printf "%b" "  ${CYAN}➤${NC} 确认密码: "
+        read -s user_pass2; echo
+        [ "$user_pass" = "$user_pass2" ] && break || warn "两次不一致"
+    done
+    useradd -m -s /bin/bash "$new_user" 2>/dev/null || adduser -D -s /bin/bash "$new_user" 2>/dev/null || true
+    echo "$new_user:$user_pass" | chpasswd 2>/dev/null || passwd "$new_user" <<< "$user_pass"$'\n'"$user_pass" 2>/dev/null || true
+    getent group sudo &>/dev/null && usermod -aG sudo "$new_user" 2>/dev/null
+    getent group wheel &>/dev/null && usermod -aG wheel "$new_user" 2>/dev/null
+    getent group sudo &>/dev/null || { groupadd sudo 2>/dev/null; usermod -aG sudo "$new_user" 2>/dev/null; }
+    ok "用户 ${GREEN}$new_user${NC} 创建成功 (sudo 需密码)"
+}
+
+change_ssh_port() {
+    local current=$(show_current_port) rand_port=$(generate_random_port) new_port input
+    printf "%b\n" "  当前端口: ${YELLOW}$current${NC}  随机推荐: ${GREEN}$rand_port${NC}"
+    printf "%b" "  ${CYAN}➤${NC} 新端口 [随机:$rand_port]: "
+    read input
+    input=$(echo "$input" | xargs)
+    [ -z "$input" ] && new_port=$rand_port || new_port=$input
+    if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1024 ] || [ "$new_port" -gt 65535 ]; then
+        warn "端口无效"; return
+    fi
+    local SSH_SERVICE=$(detect_ssh_service)
+    local SSHD_CONFIG="/etc/ssh/sshd_config"
+    [ -f "$SSHD_CONFIG" ] || SSHD_CONFIG="/etc/ssh/ssh_config"
+    cp "$SSHD_CONFIG" /root/sshd_config.bak.$(date +%Y%m%d%H%M%S) 2>/dev/null
+    safe_sed "$SSHD_CONFIG" "Port" "Port $new_port"
+    if command -v ufw &>/dev/null; then ufw allow "$new_port"/tcp 2>/dev/null; fi
+    if command -v firewall-cmd &>/dev/null; then firewall-cmd --permanent --add-port="$new_port"/tcp 2>/dev/null && firewall-cmd --reload 2>/dev/null; fi
+    if sshd -t 2>/dev/null; then
+        restart_ssh_safe "$SSH_SERVICE" "$new_port" "/root/sshd_config.bak."* "$SSHD_CONFIG"
+        ok "SSH 端口: ${GREEN}$current${NC} → ${GREEN}$new_port${NC}"
+    else
+        warn "SSH 配置测试失败，已恢复"
+    fi
+}
+
+install_base_packages() {
+    printf "\n%b\n" "  ${ICON_PKG} 安装基础软件包..."
+    pkg_install curl wget vim git htop net-tools unzip zip lrzsz
+    ok "基础软件包安装完成"
+}
+
+create_swap_menu() {
+    swapon --show 2>/dev/null | grep -q "swap" && { ok "Swap 已存在，跳过"; return; }
+    local mem_mb=$(free -m | awk '/^Mem:/{print $2}') swap_size
+    if [ "$mem_mb" -le 1024 ]; then swap_size=$(( mem_mb * 2 ))
+    elif [ "$mem_mb" -le 4096 ]; then swap_size=$(( mem_mb / 2 ))
+    else swap_size=4096; fi
+    read -rp "  Swap 大小(MB) [推荐: $swap_size]: " input_size
+    swap_size=${input_size:-$swap_size}
+    [ "$swap_size" -le 0 ] && { warn "大小无效"; return; }
+    fallocate -l ${swap_size}M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=$swap_size 2>/dev/null
+    chmod 600 /swapfile
+    mkswap /swapfile 2>/dev/null && swapon /swapfile 2>/dev/null
+    grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+    ok "Swap 创建成功 (${swap_size}MB)"
+}
+
+# 自动安全更新
 enable_auto_updates() {
     printf "\n%b\n" "  ${ICON_AUTO} 配置自动安全更新..."
     case $PKG_MGR in
@@ -259,44 +352,20 @@ EOF
     esac
 }
 
-# 可选扩展功能（仅 2 项，不再包含自动更新）
-extended_features() {
-    printf "\n%b\n" "${CYAN}┌────────────────────────────────────────┐${NC}"
-    printf "%b\n" "${CYAN}│${NC}  🧩 可选功能 (空格分隔)               ${CYAN}│${NC}"
-    printf "%b\n" "${CYAN}└────────────────────────────────────────┘${NC}"
-    printf "%b\n" "  ${GREEN}1${NC}) ${ICON_PKG} 安装基础软件包"
-    printf "%b\n" "  ${GREEN}2${NC}) ${ICON_SWAP} 创建 Swap 虚拟内存"
-    printf "%b\n" "  ${GREEN}0${NC}) 跳过 (默认)"
-    printf "%b" "  ${CYAN}➤${NC} 请选择 [0]: "
-    read -a FEATURES
-    [ ${#FEATURES[@]} -eq 0 ] && FEATURES=(0)
-    for f in "${FEATURES[@]}"; do
-        case $f in
-            1)
-                printf "\n%b\n" "${CYAN}[扩展]${NC} ${ICON_PKG} 安装基础软件包..."
-                pkg_install curl wget vim git htop net-tools unzip zip lrzsz
-                ok "基础软件包安装完成"
-                ;;
-            2)
-                printf "\n%b\n" "${CYAN}[扩展]${NC} ${ICON_SWAP} 创建 Swap..."
-                swapon --show 2>/dev/null | grep -q "swap" && { ok "Swap 已存在，跳过"; continue; }
-                local mem_mb=$(free -m | awk '/^Mem:/{print $2}') swap_size
-                if [ "$mem_mb" -le 1024 ]; then swap_size=$(( mem_mb * 2 ))
-                elif [ "$mem_mb" -le 4096 ]; then swap_size=$(( mem_mb / 2 ))
-                else swap_size=4096; fi
-                read -rp "  Swap 大小(MB) [推荐: $swap_size]: " input_size
-                swap_size=${input_size:-$swap_size}
-                [ "$swap_size" -le 0 ] && { warn "大小无效"; continue; }
-                fallocate -l ${swap_size}M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=$swap_size 2>/dev/null
-                chmod 600 /swapfile
-                mkswap /swapfile 2>/dev/null && swapon /swapfile 2>/dev/null
-                grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
-                ok "Swap 创建成功 (${swap_size}MB)"
-                ;;
-            0) break ;;
-            *) warn "无效选项: $f" ;;
-        esac
-    done
+# 创建 vps 快捷命令
+install_vps_shortcut() {
+    local target="/usr/local/bin/vps"
+    if [ -f "$0" ] && [ "$0" != "bash" ] && [ "$0" != "/dev/fd/63" ]; then
+        cp "$0" "$target"
+    else
+        curl -sL "https://raw.githubusercontent.com/GDLiBai/vps/main/vps_init.sh" -o "$target"
+    fi
+    chmod +x "$target" 2>/dev/null
+    if [ -x "$target" ]; then
+        ok "快捷命令 ${GREEN}vps${NC} 已创建，随时调用管理菜单"
+    else
+        warn "快捷命令创建失败"
+    fi
 }
 
 #========== 主流程 ==========
@@ -310,7 +379,7 @@ main() {
 
     clear
     printf "%b\n" "${BLUE}╔══════════════════════════════════════════════╗${NC}"
-    printf "%b\n" "${BLUE}║${NC}    ${ICON_ROCKET} VPS 一键初始化脚本 v2.1.0${NC}               ${BLUE}║${NC}"
+    printf "%b\n" "${BLUE}║${NC}    ${ICON_ROCKET} VPS 一键初始化脚本 v2.2.0${NC}               ${BLUE}║${NC}"
     printf "%b\n" "${BLUE}╚══════════════════════════════════════════════╝${NC}"
 
     #---- 1. 主机名 ----
@@ -329,7 +398,7 @@ main() {
 
     #---- 2. 新用户 ----
     printf "\n%b\n" "${CYAN}┌────────────────────────────────────────┐${NC}"
-    printf "%b\n" "${CYAN}│${NC}  ${ICON_USER} 步骤 2/3 · 创建管理员用户"
+    printf "%b\n" "${CYAN}│${NC}  ${ICON_USER} 步骤 2/3 · 创建管理员用户 (sudo需密码)"
     printf "%b\n" "${CYAN}└────────────────────────────────────────┘${NC}"
     while true; do
         read_nonempty "  ${CYAN}➤${NC} 用户名: " NEW_USER
@@ -355,11 +424,7 @@ main() {
         printf "%b" "  ${CYAN}➤${NC} 新端口 [随机:$RANDOM_PORT]: "
         read PORT_INPUT
         PORT_INPUT=$(echo "$PORT_INPUT" | xargs)
-        if [ -z "$PORT_INPUT" ]; then
-            NEW_PORT=$RANDOM_PORT
-            printf "%b\n" "  ${GREEN}→ 随机端口: $NEW_PORT${NC}"
-            break
-        fi
+        if [ -z "$PORT_INPUT" ]; then NEW_PORT=$RANDOM_PORT; printf "%b\n" "  ${GREEN}→ 随机端口: $NEW_PORT${NC}"; break; fi
         [[ "$PORT_INPUT" =~ ^[0-9]+$ ]] || { warn "端口必须是数字"; continue; }
         [ "$PORT_INPUT" -ge 1024 ] && [ "$PORT_INPUT" -le 65535 ] || { warn "范围: 1024-65535"; continue; }
         if ss -tlnp 2>/dev/null | grep -q ":$PORT_INPUT "; then
@@ -377,8 +442,8 @@ main() {
     printf "%b\n" "${BLUE}║${NC}          ${WHITE}📋 配置确认${NC}                         ${BLUE}║${NC}"
     printf "%b\n" "${BLUE}╠══════════════════════════════════════════════╣${NC}"
     printf "%b\n" "${BLUE}║${NC}  ${ICON_HOST} 主机名  : ${GREEN}$NEW_HOSTNAME${NC}"
-    printf "%b\n" "${BLUE}║${NC}  ${ICON_CLOCK} 时区    : ${GREEN}$TIMEZONE${NC} (已预设)"
-    printf "%b\n" "${BLUE}║${NC}  ${ICON_USER} 新用户  : ${GREEN}$NEW_USER${NC}"
+    printf "%b\n" "${BLUE}║${NC}  ${ICON_CLOCK} 时区    : ${GREEN}$TIMEZONE${NC}"
+    printf "%b\n" "${BLUE}║${NC}  ${ICON_USER} 用户    : ${GREEN}$NEW_USER${NC} ${YELLOW}(sudo需密码)${NC}"
     printf "%b\n" "${BLUE}║${NC}  ${ICON_PORT} SSH端口 : ${GREEN}$NEW_PORT${NC} ${YELLOW}(原:$CURRENT_PORT)${NC}"
     printf "%b\n" "${BLUE}║${NC}  ${ICON_LOCK} root登录: ${RED}将被禁止${NC}"
     printf "%b\n" "${BLUE}║${NC}  ${ICON_AUTO} 自动更新: ${GREEN}默认启用${NC}"
@@ -394,7 +459,6 @@ main() {
     printf "%b\n" "${CYAN}│${NC}  ${ICON_ROCKET} 正在执行配置...                ${CYAN}│${NC}"
     printf "%b\n" "${CYAN}└────────────────────────────────────────┘${NC}"
 
-    # 主机名
     OLD_HOSTNAME=$(hostname)
     hostnamectl set-hostname "$NEW_HOSTNAME" 2>/dev/null || hostname "$NEW_HOSTNAME" 2>/dev/null || true
     echo "$NEW_HOSTNAME" > /etc/hostname
@@ -402,25 +466,16 @@ main() {
     grep -q "$NEW_HOSTNAME" /etc/hosts || echo "127.0.1.1 $NEW_HOSTNAME" >> /etc/hosts
     ok "主机名: ${GREEN}$OLD_HOSTNAME${NC} → ${GREEN}$NEW_HOSTNAME${NC}"
 
-    # 时区
     timedatectl set-timezone "$TIMEZONE" 2>/dev/null || ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime 2>/dev/null || true
     ok "时区: ${GREEN}$TIMEZONE${NC}"
 
-    # 用户
     useradd -m -s /bin/bash "$NEW_USER" 2>/dev/null || adduser -D -s /bin/bash "$NEW_USER" 2>/dev/null || true
     echo "$NEW_USER:$USER_PASS" | chpasswd 2>/dev/null || passwd "$NEW_USER" <<< "$USER_PASS"$'\n'"$USER_PASS" 2>/dev/null || true
     getent group sudo &>/dev/null && usermod -aG sudo "$NEW_USER" 2>/dev/null
     getent group wheel &>/dev/null && usermod -aG wheel "$NEW_USER" 2>/dev/null
     getent group sudo &>/dev/null || { groupadd sudo 2>/dev/null; usermod -aG sudo "$NEW_USER" 2>/dev/null; }
-    if confirm "  允许 ${NEW_USER} 无密码 sudo?" "N"; then
-        echo "$NEW_USER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/$NEW_USER"
-        chmod 440 "/etc/sudoers.d/$NEW_USER"
-        ok "无密码 sudo 已配置"
-    else
-        ok "sudo 权限已授予 (需密码)"
-    fi
+    ok "用户 ${GREEN}$NEW_USER${NC} 创建成功 (sudo 需密码)"
 
-    # SSH
     SSH_SERVICE=$(detect_ssh_service)
     SSHD_CONFIG="/etc/ssh/sshd_config"
     [ -f "$SSHD_CONFIG" ] || SSHD_CONFIG="/etc/ssh/ssh_config"
@@ -433,13 +488,9 @@ main() {
     safe_sed "$SSHD_CONFIG" "X11Forwarding" "X11Forwarding no"
     grep -q "^Protocol" "$SSHD_CONFIG" 2>/dev/null || echo "Protocol 2" >> "$SSHD_CONFIG"
 
-    # 防火墙
     if command -v ufw &>/dev/null; then ufw allow "$NEW_PORT"/tcp 2>/dev/null; fi
-    if command -v firewall-cmd &>/dev/null; then
-        firewall-cmd --permanent --add-port="$NEW_PORT"/tcp 2>/dev/null && firewall-cmd --reload 2>/dev/null
-    fi
+    if command -v firewall-cmd &>/dev/null; then firewall-cmd --permanent --add-port="$NEW_PORT"/tcp 2>/dev/null && firewall-cmd --reload 2>/dev/null; fi
 
-    # 重启 SSH
     if sshd -t 2>/dev/null; then
         restart_ssh_safe "$SSH_SERVICE" "$NEW_PORT" "$BACKUP_DIR/sshd_config.bak" "$SSHD_CONFIG"
         ok "SSH 端口: ${GREEN}$NEW_PORT${NC}"
@@ -449,11 +500,11 @@ main() {
         err "SSH 配置错误，已回滚"
     fi
 
-    # ★ 自动安全更新（默认启用）
+    # 自动安全更新
     enable_auto_updates
 
-    # 可选扩展
-    extended_features
+    # 创建 vps 快捷命令
+    install_vps_shortcut
 
     # 完成
     IPV4=$(get_public_ipv4); [ -z "$IPV4" ] && IPV4="无"
@@ -466,7 +517,7 @@ main() {
     printf "%b\n" "${GREEN}╠══════════════════════════════════════════════╣${NC}"
     printf "%b\n" "${GREEN}║${NC}  ${ICON_HOST} 主机名 : ${WHITE}$NEW_HOSTNAME${NC}"
     printf "%b\n" "${GREEN}║${NC}  ${ICON_CLOCK} 时区   : ${WHITE}$TIMEZONE${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${ICON_USER} 用户   : ${WHITE}$NEW_USER${NC}"
+    printf "%b\n" "${GREEN}║${NC}  ${ICON_USER} 用户   : ${WHITE}$NEW_USER${NC} ${YELLOW}(sudo需密码)${NC}"
     printf "%b\n" "${GREEN}║${NC}  ${ICON_PORT} SSH端口: ${WHITE}$NEW_PORT${NC} ${YELLOW}(原:$CURRENT_PORT)${NC}"
     printf "%b\n" "${GREEN}║${NC}  ${ICON_LOCK} root登录: ${RED}已禁止${NC}"
     printf "%b\n" "${GREEN}║${NC}  ${ICON_IPV4} IPv4    : ${WHITE}$IPV4${NC}"
@@ -476,9 +527,20 @@ main() {
     printf "%b\n" "${GREEN}║${NC}  ${ICON_WARN} ${YELLOW}立即测试新连接:${NC}                       ${GREEN}║${NC}"
     printf "%b\n" "${GREEN}║${NC}  ${WHITE}ssh -p $NEW_PORT $NEW_USER@$IPV4${NC}                 ${GREEN}║${NC}"
     [ "$IPV6" != "无" ] && printf "%b\n" "${GREEN}║${NC}  ${WHITE}ssh -p $NEW_PORT $NEW_USER@$IPV6${NC}          ${GREEN}║${NC}"
+    printf "%b\n" "${GREEN}║${NC}  ${ICON_MENU} 输入 ${WHITE}vps${NC} 打开管理菜单              ${GREEN}║${NC}"
     printf "%b\n" "${GREEN}║${NC}  ${ICON_INFO} 备份: ${WHITE}$BACKUP_DIR${NC}"
     printf "%b\n" "${GREEN}╚══════════════════════════════════════════════╝${NC}"
     printf "\n"
+
+    # 自动打开管理菜单
+    management_menu
 }
 
-main "$@"
+# 检测是否通过 vps 命令调用
+if [ "$(basename "$0")" = "vps" ]; then
+    check_root
+    detect_pkg_manager
+    management_menu
+else
+    main "$@"
+fi
