@@ -278,13 +278,13 @@ main() {
         validate_username "$NEW_USER" && break
     done
     
-    echo -e "\n  ${WHITE}提示:${NC} 密码至少8位，建议包含大小写字母+数字+特殊字符"
+    echo -e "\n  ${WHITE}提示:${NC} 密码至少6位，建议包含大小写字母+数字+特殊字符"
     while true; do
         echo -ne "  ${CYAN}➤${NC} 密码: "
         read -rs USER_PASS
         echo ""
-        if [ ${#USER_PASS} -lt 8 ]; then
-            warn "密码长度不足8位"
+        if [ ${#USER_PASS} -lt 6 ]; then
+            warn "密码长度不足6位"
             continue
         fi
         
