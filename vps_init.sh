@@ -1,253 +1,373 @@
 #!/bin/bash
 #==================================================
-# VPS 一键安全初始化脚本 v3.2 增强版
+# VPS 一键安全初始化脚本 v3.7 - 旗舰版
+# 新增：完整系统配置展示
+# 兼容 Debian/Ubuntu/CentOS/RHEL/Alpine
 #==================================================
-
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 set -o pipefail
 
-#-------- 配置 --------
-SCRIPT_VERSION="3.2"
-LOG_DIR="/var/log"
-LOG_FILE="${LOG_DIR}/vps_init_$(date +%Y%m%d_%H%M%S).log"
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LOG_FILE="/var/log/vps_init_$(date +%Y%m%d_%H%M%S).log"
 BACKUP_DIR="/root/vps_backup_$(date +%Y%m%d_%H%M%S)"
 
-#-------- 颜色 --------
+#-------- 颜色与图标 --------
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-BLUE='\033[0;34m'; CYAN='\033[0;36m'; MAGENTA='\033[0;35m'
-WHITE='\033[1;37m'; BOLD='\033[1m'; NC='\033[0m'
+BLUE='\033[0;34m'; CYAN='\033[0;36m'; WHITE='\033[1;37m'; NC='\033[0m'
+ICON_OK="✅"; ICON_ERR="❌"; ICON_WARN="⚠️"; ICON_INFO="📌"
+ICON_ROCKET="🚀"; ICON_LOCK="🔒"; ICON_USER="👤"; ICON_HOST="🖥️"
+ICON_CLOCK="🕐"; ICON_PORT="🔌"; ICON_DONE="🎉"; ICON_PKG="📦"
+ICON_SWAP="💾"; ICON_BBR="⚡"; ICON_F2B="🛡️"; ICON_MON="📊"
+ICON_FW="🔥"; ICON_HARD="🧹"
 
-#-------- 图标 --------
-ICON_OK="✅"; ICON_ERR="❌"; ICON_WARN="⚠️"
-ICON_INFO="📌"; ICON_ROCKET="🚀"; ICON_LOCK="🔒"
-ICON_USER="👤"; ICON_HOST="🖥️"; ICON_CLOCK="🕐"
-ICON_PORT="🔌"; ICON_DONE="🎉"; ICON_SHIELD="🛡️"
+#-------- 工具函数 --------
+log()    { echo -e "$(date '+%H:%M:%S') $*" | tee -a "$LOG_FILE"; }
+ok()     { log "  ${ICON_OK} $*"; }
+warn()   { log "  ${ICON_WARN} $*"; }
+err()    { log "  ${ICON_ERR} $*"; exit 1; }
 
-#-------- 日志函数 --------
-log() { 
-    echo -e "$(date '+%H:%M:%S') $*" | tee -a "$LOG_FILE"
-}
-
-ok() { 
-    log "  ${ICON_OK} $*"
-}
-
-warn() { 
-    log "  ${ICON_WARN} $*"
-}
-
-err() { 
-    log "  ${ICON_ERR} $*"
-    exit 1
-}
-
-# 记录特殊事件
-log_exec() {
-    log "  ⚙️  执行: $*"
-    "$@" >> "$LOG_FILE" 2>&1 || {
-        err "命令执行失败: $*"
-    }
-}
-
-#-------- 进度条 --------
-progress_bar() {
-    local current=$1 total=$2
-    local width=30 percent=$((current * 100 / total))
-    local filled=$((current * width / total))
-    printf "\r  ["
-    for ((i=0; i<filled; i++)); do printf "${GREEN}█${NC}"; done
-    for ((i=filled; i<width; i++)); do printf "${WHITE}░${NC}"; done
-    printf "] %3d%%" $percent
-    [ "$current" -eq "$total" ] && echo ""
-}
-
-#-------- 步骤标题 --------
-step_header() {
-    echo -e "\n${CYAN}┌────────────────────────────────────────┐${NC}"
-    echo -e "${CYAN}│${NC} $1"
-    echo -e "${CYAN}└────────────────────────────────────────┘${NC}"
-}
-
-#-------- 权限检查 --------
 check_root() {
-    [ "$EUID" -eq 0 ] || err "必须使用root权限运行此脚本"
+    [ "$EUID" -eq 0 ] || { echo -e "${RED}${ICON_ERR} 请使用root运行${NC}"; exit 1; }
 }
 
-check_os() {
-    if [ ! -f "/etc/os-release" ]; then
-        err "无法检测操作系统"
+check_network() {
+    if ! ping -c1 -W2 8.8.8.8 &>/dev/null && ! ping -c1 -W2 1.1.1.1 &>/dev/null; then
+        warn "网络不可用，部分功能可能失败"
     fi
-    . /etc/os-release
-    OS_TYPE=$(echo "$ID" | tr '[:lower:]' '[:upper:]')
-    log "检测到系统: $PRETTY_NAME"
 }
 
-#-------- 端口管理 --------
-generate_random_port() {
-    local port
-    local excluded=(21 22 23 25 53 80 110 143 443 465 587 993 995 3306 5432 6379 8080 8443 8888 9090)
-    local max_attempts=100
-    local attempts=0
-    
-    while [ $attempts -lt $max_attempts ]; do
-        port=$(( RANDOM % 55536 + 10000 ))
-        
-        # 检查是否在排除列表中
-        local excluded_found=0
-        for ep in "${excluded[@]}"; do 
-            if [ "$port" -eq "$ep" ]; then
-                excluded_found=1
-                break
-            fi
-        done
-        
-        if [ $excluded_found -eq 0 ] && ! ss -tlnp 2>/dev/null | grep -q ":$port "; then
-            echo "$port"
-            return 0
-        fi
-        
-        ((attempts++))
+detect_pkg_manager() {
+    if command -v apt &>/dev/null; then
+        PKG_MGR="apt"; UPDATE_CMD="apt update -y"; INSTALL_CMD="apt install -y"
+    elif command -v dnf &>/dev/null; then
+        PKG_MGR="dnf"; UPDATE_CMD="dnf check-update -y || true"; INSTALL_CMD="dnf install -y"
+    elif command -v yum &>/dev/null; then
+        PKG_MGR="yum"; UPDATE_CMD="yum check-update -y || true"; INSTALL_CMD="yum install -y"
+    elif command -v apk &>/dev/null; then
+        PKG_MGR="apk"; UPDATE_CMD="apk update"; INSTALL_CMD="apk add"
+    else
+        err "不支持的包管理器 (需要 apt/dnf/yum/apk)"
+    fi
+}
+
+pkg_install() {
+    case $PKG_MGR in
+        apt) $INSTALL_CMD $* 2>/dev/null || true ;;
+        dnf|yum) $INSTALL_CMD epel-release 2>/dev/null || true; $INSTALL_CMD $* 2>/dev/null || true ;;
+        apk) $INSTALL_CMD $* 2>/dev/null || true ;;
+    esac
+}
+
+confirm() {
+    local prompt="$1" default="$2" input
+    while true; do
+        read -rp "$prompt [${default}]: " input
+        input=$(echo "$input" | xargs)
+        [ -z "$input" ] && input="$default"
+        case "$input" in
+            [Yy]*) echo "Y"; return 0;;
+            [Nn]*) echo "N"; return 1;;
+            *) echo -e "${YELLOW}请输入 Y 或 N${NC}";;
+        esac
     done
-    
-    err "无法生成可用端口，请手动指定"
 }
 
-#-------- 验证函数 --------
+read_nonempty() {
+    local prompt="$1" var_name="$2" input
+    while true; do
+        read -rp "$prompt" input
+        input=$(echo "$input" | xargs)
+        if [ -n "$input" ]; then
+            eval "$var_name=\"$input\""
+            return
+        fi
+        echo -e "${YELLOW}输入不能为空${NC}"
+    done
+}
+
+generate_random_port() {
+    local port excluded=(21 22 23 25 53 80 110 143 443 465 587 993 995 3306 5432 6379 8080 8443 8888 9090)
+    while true; do
+        port=$(( RANDOM % 55536 + 10000 ))
+        for ep in "${excluded[@]}"; do [ "$port" -eq "$ep" ] && continue 2; done
+        ss -tlnp 2>/dev/null | grep -q ":$port " || { echo "$port"; return; }
+    done
+}
+
 validate_hostname() {
-    local hostname=$1
-    if ! [[ "$hostname" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$ ]]; then
-        warn "无效主机名: $hostname"
-        warn "主机名规则: 仅包含字母/数字/-，长度1-63，不能以-开头/结尾"
-        return 1
-    fi
-    return 0
+    [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$ ]] || err "无效主机名: $1"
 }
 
 validate_username() {
-    local username=$1
-    local reserved=(root bin daemon adm lp sync shutdown halt mail news uucp operator games gopher ftp nobody ntp mysql postgres)
-    
-    for r in "${reserved[@]}"; do 
-        if [ "$username" = "$r" ]; then
-            warn "系统保留用户: $username"
-            return 1
-        fi
-    done
-    
-    if id "$username" &>/dev/null; then
-        warn "用户已存在: $username"
-        return 1
-    fi
-    
-    if ! [[ "$username" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
-        warn "用户名格式错误: $username"
-        warn "用户名规则: 以字母或_开头，仅包含字母/数字/_/-"
-        return 1
-    fi
-    
-    return 0
+    local u="$1" r
+    local reserved=(root bin daemon adm lp sync shutdown halt mail news uucp operator games gopher ftp nobody)
+    for r in "${reserved[@]}"; do [ "$u" = "$r" ] && err "系统保留用户: $u"; done
+    id "$u" &>/dev/null && err "用户 $u 已存在"
+    [[ "$u" =~ ^[a-z_][a-z0-9_-]*$ ]] || err "用户名格式错误"
 }
 
-validate_port() {
-    local port=$1
-    
-    if ! [[ "$port" =~ ^[0-9]+$ ]]; then
-        warn "端口必须是数字"
-        return 1
-    fi
-    
-    if [ "$port" -lt 1024 ] || [ "$port" -gt 65535 ]; then
-        warn "端口范围: 1024-65535"
-        return 1
-    fi
-    
-    return 0
-}
-
-#-------- SSH相关 --------
 safe_sed() {
-    local file="$1" pattern="$2" replacement="$3"
-    
-    if ! grep -q "^${pattern}" "$file" 2>/dev/null; then
-        if ! grep -q "^#${pattern}" "$file" 2>/dev/null; then
-            echo "$replacement" >> "$file"
-            return
-        fi
+    local f="$1" p="$2" r="$3"
+    if grep -q "^${p}" "$f" 2>/dev/null; then
+        sed -i "s/^${p}.*/${r}/" "$f"
+    elif grep -q "^#${p}" "$f" 2>/dev/null; then
+        sed -i "s/^#${p}.*/${r}/" "$f"
+    else
+        echo "$r" >> "$f"
     fi
-    
-    # 使用 | 作为分隔符避免 / 冲突
-    sed -i "s|^#\?${pattern}.*|${replacement}|g" "$file"
 }
 
 detect_ssh_service() {
-    if systemctl list-units --type=service 2>/dev/null | grep -q "sshd.service"; then
-        echo "sshd"
-    elif systemctl list-units --type=service 2>/dev/null | grep -q "ssh.service"; then
-        echo "ssh"
-    else
-        echo "ssh"
-    fi
+    systemctl list-units --type=service 2>/dev/null | grep -q "sshd.service" && echo "sshd" && return
+    systemctl list-units --type=service 2>/dev/null | grep -q "ssh.service" && echo "ssh" && return
+    echo "ssh"
 }
 
 show_current_port() {
     grep -E "^Port [0-9]+" /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' || echo "22"
 }
 
-validate_sshd_config() {
-    local config=$1
-    if sshd -t -f "$config" 2>/dev/null; then
-        return 0
+restart_ssh() {
+    local svc="$1"
+    systemctl restart "$svc" 2>/dev/null || service "$svc" restart 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null
+}
+
+backup_system_files() {
+    mkdir -p "$BACKUP_DIR"
+    for f in /etc/hostname /etc/hosts /etc/ssh/sshd_config /etc/passwd /etc/shadow /etc/group /etc/sudoers; do
+        [ -f "$f" ] && cp "$f" "$BACKUP_DIR/" 2>/dev/null
+    done
+}
+
+#---- 显示完整系统配置 ----
+show_system_info() {
+    clear
+    echo -e "${BLUE}╔══════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║${NC}           ${WHITE}📋 当前系统配置详情${NC}               ${BLUE}║${NC}"
+    echo -e "${BLUE}╚══════════════════════════════════════════════╝${NC}"
+
+    # 操作系统
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS_NAME="${PRETTY_NAME:-$NAME $VERSION}"
     else
-        warn "SSH配置验证失败"
-        return 1
+        OS_NAME="未知"
+    fi
+    echo -e "  ${ICON_INFO} 系统    : ${GREEN}${OS_NAME}${NC}"
+
+    # 内核
+    KERNEL=$(uname -r)
+    echo -e "  ${ICON_INFO} 内核    : ${GREEN}${KERNEL}${NC}"
+
+    # CPU
+    CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d':' -f2 | xargs || echo "未知")
+    CPU_CORES=$(nproc 2>/dev/null || echo "未知")
+    echo -e "  ${ICON_INFO} CPU     : ${GREEN}${CPU_MODEL} (${CPU_CORES} 核)${NC}"
+
+    # 内存
+    MEM_TOTAL=$(free -h 2>/dev/null | awk '/^Mem:/{print $2}' || echo "未知")
+    MEM_USED=$(free -h 2>/dev/null | awk '/^Mem:/{print $3}' || echo "未知")
+    echo -e "  ${ICON_INFO} 内存    : ${GREEN}${MEM_USED} / ${MEM_TOTAL}${NC}"
+
+    # 磁盘
+    DISK_INFO=$(df -h / 2>/dev/null | awk 'NR==2{print $3"/"$2" ("$5")"}' || echo "未知")
+    echo -e "  ${ICON_INFO} 磁盘    : ${GREEN}${DISK_INFO}${NC}"
+
+    # 网络
+    IPV4=$(curl -s4 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "未知")
+    echo -e "  ${ICON_INFO} IPv4    : ${GREEN}${IPV4}${NC}"
+
+    # 主机名与 SSH 端口
+    CURRENT_HOST=$(hostname)
+    CURRENT_SSH=$(show_current_port)
+    echo -e "  ${ICON_HOST} 主机名  : ${YELLOW}${CURRENT_HOST}${NC}"
+    echo -e "  ${ICON_PORT} SSH端口 : ${YELLOW}${CURRENT_SSH}${NC}"
+
+    # 时区
+    CURRENT_TZ=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "未知")
+    echo -e "  ${ICON_CLOCK} 时区    : ${YELLOW}${CURRENT_TZ}${NC}"
+
+    # Swap
+    SWAP_INFO=$(swapon --show 2>/dev/null | awk 'NR>1{print $3}' | paste -sd+ | bc 2>/dev/null)
+    [ -z "$SWAP_INFO" ] && SWAP_INFO="无"
+    echo -e "  ${ICON_SWAP} Swap    : ${YELLOW}${SWAP_INFO}${NC}"
+
+    # 当前登录用户
+    USERS=$(who | awk '{print $1}' | sort -u | paste -sd,)
+    [ -z "$USERS" ] && USERS="无"
+    echo -e "  ${ICON_USER} 在线用户: ${YELLOW}${USERS}${NC}"
+
+    echo ""
+    read -rp "  按回车键继续初始化..." dummy
+}
+
+#---- 扩展功能 ----
+install_base_packages() {
+    echo -e "\n${CYAN}[扩展]${NC} ${ICON_PKG} 安装基础软件包..."
+    pkg_install curl wget vim git htop net-tools unzip zip lrzsz
+    ok "基础软件包安装完成"
+}
+
+enable_bbr() {
+    echo -e "\n${CYAN}[扩展]${NC} ${ICON_BBR} 开启 BBR..."
+    local kernel_ver=$(uname -r | cut -d. -f1)
+    [ "$kernel_ver" -lt 4 ] && { warn "内核版本过低，无法开启 BBR"; return; }
+    grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf || echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+    grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf || echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+    sysctl -p 2>/dev/null
+    ok "BBR 已开启"
+}
+
+create_swap() {
+    echo -e "\n${CYAN}[扩展]${NC} ${ICON_SWAP} 创建 Swap..."
+    if swapon --show 2>/dev/null | grep -q "swap"; then
+        ok "Swap 已存在，跳过"
+        return
+    fi
+    local mem_mb=$(free -m | awk '/^Mem:/{print $2}')
+    local swap_size
+    if [ "$mem_mb" -le 1024 ]; then swap_size=$(( mem_mb * 2 ))
+    elif [ "$mem_mb" -le 4096 ]; then swap_size=$(( mem_mb / 2 ))
+    else swap_size=4096; fi
+    read -rp "  Swap 大小(MB) [推荐: $swap_size]: " input_size
+    swap_size=${input_size:-$swap_size}
+    [ "$swap_size" -le 0 ] && { warn "大小无效"; return; }
+    fallocate -l ${swap_size}M /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=$swap_size 2>/dev/null
+    chmod 600 /swapfile
+    mkswap /swapfile 2>/dev/null && swapon /swapfile 2>/dev/null
+    grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+    ok "Swap 创建成功 (${swap_size}MB)"
+}
+
+install_fail2ban() {
+    echo -e "\n${CYAN}[扩展]${NC} ${ICON_F2B} 安装 Fail2Ban..."
+    pkg_install fail2ban
+    cat > /etc/fail2ban/jail.local << EOF
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 5
+[sshd]
+enabled = true
+port = ${NEW_PORT:-22}
+EOF
+    systemctl enable fail2ban 2>/dev/null
+    systemctl restart fail2ban 2>/dev/null
+    ok "Fail2Ban 已配置"
+}
+
+install_monitoring() {
+    echo -e "\n${CYAN}[扩展]${NC} ${ICON_MON} 安装监控工具..."
+    if command -v snap &>/dev/null; then snap install btop 2>/dev/null; else pkg_install btop 2>/dev/null || true; fi
+    pip install glances 2>/dev/null || pkg_install glances 2>/dev/null || true
+    ok "监控安装完成"
+}
+
+configure_firewall_rules() {
+    echo -e "\n${CYAN}[扩展]${NC} ${ICON_FW} 配置防火墙规则..."
+    local ssh_port=${NEW_PORT:-22}
+    if command -v ufw &>/dev/null; then
+        ufw --force reset 2>/dev/null
+        ufw default deny incoming 2>/dev/null
+        ufw default allow outgoing 2>/dev/null
+        ufw allow $ssh_port/tcp 2>/dev/null
+        if confirm "  开放 HTTP(80)/HTTPS(443)?" "N"; then
+            ufw allow 80/tcp; ufw allow 443/tcp
+        fi
+        ufw --force enable 2>/dev/null
+        ok "UFW 规则已应用"
+    elif command -v firewall-cmd &>/dev/null; then
+        firewall-cmd --permanent --add-port=$ssh_port/tcp 2>/dev/null
+        if confirm "  开放 HTTP/HTTPS 服务?" "N"; then
+            firewall-cmd --permanent --add-service=http 2>/dev/null
+            firewall-cmd --permanent --add-service=https 2>/dev/null
+        fi
+        firewall-cmd --reload 2>/dev/null
+        ok "firewalld 规则已应用"
+    else
+        warn "未检测到防火墙"
     fi
 }
 
-#-------- 主函数 --------
+system_hardening() {
+    echo -e "\n${CYAN}[扩展]${NC} ${ICON_HARD} 系统安全加固..."
+    passwd -l root 2>/dev/null && ok "已锁定 root 密码" || true
+    [ -f /etc/ssh/sshd_config ] && {
+        safe_sed /etc/ssh/sshd_config "PermitEmptyPasswords" "PermitEmptyPasswords no"
+        safe_sed /etc/ssh/sshd_config "X11Forwarding" "X11Forwarding no"
+    }
+    $UPDATE_CMD 2>/dev/null
+    case $PKG_MGR in
+        apt) apt upgrade -y 2>/dev/null ;;
+        dnf|yum) $INSTALL_CMD -y update 2>/dev/null || true ;;
+        apk) apk upgrade 2>/dev/null || true ;;
+    esac
+    ok "系统加固完成"
+}
+
+extended_features() {
+    echo -e "\n${CYAN}┌────────────────────────────────────────┐${NC}"
+    echo -e "${CYAN}│${NC}  🧩 可选扩展功能 (空格分隔多选)       ${CYAN}│${NC}"
+    echo -e "${CYAN}└────────────────────────────────────────┘${NC}"
+    echo -e "  ${GREEN}2${NC}) ${ICON_PKG} 安装基础软件包"
+    echo -e "  ${GREEN}3${NC}) ${ICON_BBR} 开启 BBR 加速"
+    echo -e "  ${GREEN}4${NC}) ${ICON_SWAP} 创建 Swap"
+    echo -e "  ${GREEN}5${NC}) ${ICON_F2B} 安装 Fail2Ban"
+    echo -e "  ${GREEN}6${NC}) ${ICON_MON} 安装监控 (btop+glances)"
+    echo -e "  ${GREEN}7${NC}) ${ICON_FW} 配置防火墙规则"
+    echo -e "  ${GREEN}8${NC}) ${ICON_HARD} 系统清理与安全加固"
+    echo -e "  ${GREEN}0${NC}) 跳过 (默认)"
+    echo -ne "  ${CYAN}➤${NC} 请选择 [0]: "
+    read -a FEATURES
+    [ ${#FEATURES[@]} -eq 0 ] && FEATURES=(0)
+    for f in "${FEATURES[@]}"; do
+        case $f in
+            2) install_base_packages ;;
+            3) enable_bbr ;;
+            4) create_swap ;;
+            5) install_fail2ban ;;
+            6) install_monitoring ;;
+            7) configure_firewall_rules ;;
+            8) system_hardening ;;
+            0) break ;;
+            *) warn "无效选项: $f" ;;
+        esac
+    done
+}
+
+#========== 主流程 ==========
 main() {
     check_root
-    check_os
-    mkdir -p "$(dirname "$LOG_FILE")" "$BACKUP_DIR"
-    log "========== VPS初始化开始 =========="
-    
+    check_network
+    detect_pkg_manager
+    backup_system_files
+    log "VPS 初始化开始"
+
+    # 展示完整系统配置
+    show_system_info
+
     clear
-    
-    # 顶部横幅
     echo -e "${BLUE}╔══════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║${NC}                                              ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  ${CYAN}   🚀  VPS 一键安全初始化脚本${NC}              ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  ${WHITE}   v${SCRIPT_VERSION} · 增强安全版${NC}                        ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}                                              ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC}    ${ICON_ROCKET} VPS 一键初始化脚本 v3.7 旗舰版${NC}         ${BLUE}║${NC}"
     echo -e "${BLUE}╚══════════════════════════════════════════════╝${NC}"
 
-    # 系统信息概览
-    echo -e "\n${WHITE}📋 系统概览${NC}"
-    echo -e "  ${ICON_HOST} 主机名   : ${YELLOW}$(hostname)${NC}"
-    echo -e "  ${ICON_INFO} 系统     : ${YELLOW}${PRETTY_NAME}${NC}"
-    echo -e "  ${ICON_INFO} 内核版本 : ${YELLOW}$(uname -r)${NC}"
-    echo -e "  ${ICON_PORT} SSH端口  : ${YELLOW}$(show_current_port)${NC}"
-    echo -e "  ${ICON_CLOCK} 当前时间 : ${YELLOW}$(date '+%Y-%m-%d %H:%M:%S %Z')${NC}"
-
-    # ---- 1. 主机名配置 ----
-    step_header "${ICON_HOST} 步骤 1/5 · 主机名配置"
-    echo -e "  ${WHITE}示例:${NC} my-server、web-prod-01、game-vps"
+    #---- 1. 主机名 ----
+    echo -e "\n${CYAN}┌────────────────────────────────────────┐${NC}"
+    echo -e "${CYAN}│${NC}  ${ICON_HOST} 步骤 1/4 · 主机名配置"
+    echo -e "${CYAN}└────────────────────────────────────────┘${NC}"
     while true; do
-        echo -ne "  ${CYAN}➤${NC} 新主机名: "
-        read -r NEW_HOSTNAME
-        NEW_HOSTNAME=$(echo "$NEW_HOSTNAME" | xargs)
-        [ -z "$NEW_HOSTNAME" ] && { warn "主机名不能为空"; continue; }
+        read_nonempty "  ${CYAN}➤${NC} 新主机名: " NEW_HOSTNAME
         validate_hostname "$NEW_HOSTNAME" && break
     done
 
-    # ---- 2. 时区配置 ----
-    step_header "${ICON_CLOCK} 步骤 2/5 · 时区配置"
-    echo -e "  ${WHITE}常用时区:${NC}"
-    echo -e "  ${GREEN}1${NC}) 🇨🇳 Shanghai   ${GREEN}2${NC}) 🇭🇰 HongKong   ${GREEN}3${NC}) 🇯🇵 Tokyo"
-    echo -e "  ${GREEN}4${NC}) 🇸🇬 Singapore  ${GREEN}5${NC}) 🇰🇷 Seoul      ${GREEN}6${NC}) 🇹🇼 Taipei"
-    echo -e "  ${GREEN}0${NC}) 🌍 自定义"
+    #---- 2. 时区 ----
+    echo -e "\n${CYAN}┌────────────────────────────────────────┐${NC}"
+    echo -e "${CYAN}│${NC}  ${ICON_CLOCK} 步骤 2/4 · 时区配置"
+    echo -e "${CYAN}└────────────────────────────────────────┘${NC}"
+    echo -e "  ${GREEN}1${NC}) Shanghai  ${GREEN}2${NC}) HongKong  ${GREEN}3${NC}) Tokyo"
+    echo -e "  ${GREEN}4${NC}) Singapore ${GREEN}5${NC}) Seoul     ${GREEN}6${NC}) Taipei"
+    echo -e "  ${GREEN}0${NC}) 自定义"
     while true; do
-        echo -ne "  ${CYAN}➤${NC} 请选择 [1]: "
-        read -r TZ
+        read -rp "  ${CYAN}➤${NC} 选择 [1]: " TZ
         TZ=${TZ:-1}
         case $TZ in
             1) TIMEZONE="Asia/Shanghai"; break;;
@@ -256,319 +376,161 @@ main() {
             4) TIMEZONE="Asia/Singapore"; break;;
             5) TIMEZONE="Asia/Seoul"; break;;
             6) TIMEZONE="Asia/Taipei"; break;;
-            0) echo -ne "  ${CYAN}➤${NC} 输入时区: "; read -r TIMEZONE
-               if [ -f "/usr/share/zoneinfo/$TIMEZONE" ]; then
-                   break
-               else
-                   warn "无效时区，请重试"
-               fi
-               ;;
-            *) warn "请输入 0-6";;
+            0) read -rp "  ${CYAN}➤${NC} 输入时区: " TIMEZONE
+               [ -f "/usr/share/zoneinfo/$TIMEZONE" ] && break || warn "无效时区";;
+            *) warn "输入0-6";;
         esac
     done
 
-    # ---- 3. 新用户创建 ----
-    step_header "${ICON_USER} 步骤 3/5 · 创建管理员用户"
-    echo -e "  ${WHITE}示例:${NC} admin、deploy、myuser"
+    #---- 3. 新用户 ----
+    echo -e "\n${CYAN}┌────────────────────────────────────────┐${NC}"
+    echo -e "${CYAN}│${NC}  ${ICON_USER} 步骤 3/4 · 创建管理员用户"
+    echo -e "${CYAN}└────────────────────────────────────────┘${NC}"
     while true; do
-        echo -ne "  ${CYAN}➤${NC} 用户名: "
-        read -r NEW_USER
-        NEW_USER=$(echo "$NEW_USER" | xargs | tr '[:upper:]' '[:lower:]')
-        [ -z "$NEW_USER" ] && { warn "用户名不能为空"; continue; }
+        read_nonempty "  ${CYAN}➤${NC} 用户名: " NEW_USER
         validate_username "$NEW_USER" && break
     done
-    
-    echo -e "\n  ${WHITE}提示:${NC} 密码至少6位，建议包含大小写字母+数字+特殊字符"
     while true; do
-        echo -ne "  ${CYAN}➤${NC} 密码: "
-        read -rs USER_PASS
-        echo ""
-        if [ ${#USER_PASS} -lt 6 ]; then
-            warn "密码长度不足6位"
-            continue
-        fi
-        
-        echo -ne "  ${CYAN}➤${NC} 再次输入密码: "
-        read -rs USER_PASS2
-        echo ""
-        
-        if [ "$USER_PASS" = "$USER_PASS2" ]; then
-            break
-        else
-            warn "两次输入不一致，请重试"
-        fi
+        read -rsp "  ${CYAN}➤${NC} 密码 (至少6位): " USER_PASS; echo
+        [ ${#USER_PASS} -ge 6 ] || { warn "长度不足6位"; continue; }
+        read -rsp "  ${CYAN}➤${NC} 确认密码: " USER_PASS2; echo
+        [ "$USER_PASS" = "$USER_PASS2" ] && break || warn "两次不一致"
     done
 
-    # ---- 4. SSH端口配置 ----
-    step_header "${ICON_PORT} 步骤 4/5 · SSH端口配置"
+    #---- 4. SSH端口 ----
+    echo -e "\n${CYAN}┌────────────────────────────────────────┐${NC}"
+    echo -e "${CYAN}│${NC}  ${ICON_PORT} 步骤 4/4 · SSH端口配置"
+    echo -e "${CYAN}└────────────────────────────────────────┘${NC}"
     CURRENT_PORT=$(show_current_port)
     RANDOM_PORT=$(generate_random_port)
-    
-    echo -e "  ${WHITE}当前端口:${NC} ${YELLOW}$CURRENT_PORT${NC}"
-    echo -e "  ${WHITE}随机推荐:${NC} ${GREEN}$RANDOM_PORT${NC}"
-    echo -e "  ${WHITE}输入数字 = 指定  |  直接回车 = 随机${NC}"
-    
+    echo -e "  当前端口: ${YELLOW}$CURRENT_PORT${NC}  随机推荐: ${GREEN}$RANDOM_PORT${NC}"
     while true; do
-        echo -ne "  ${CYAN}➤${NC} 新端口 [回车使用$RANDOM_PORT]: "
-        read -r PORT_INPUT
+        read -rp "  ${CYAN}➤${NC} 新端口 [随机:$RANDOM_PORT]: " PORT_INPUT
         PORT_INPUT=$(echo "$PORT_INPUT" | xargs)
-        
         if [ -z "$PORT_INPUT" ]; then
             NEW_PORT=$RANDOM_PORT
-            echo -e "  ${GREEN}→ 已选择端口: $NEW_PORT${NC}"
+            echo -e "  ${GREEN}→ 使用随机端口: $NEW_PORT${NC}"
             break
         fi
-        
-        validate_port "$PORT_INPUT" || continue
-        
+        [[ "$PORT_INPUT" =~ ^[0-9]+$ ]] || { warn "端口必须是数字"; continue; }
+        [ "$PORT_INPUT" -ge 1024 ] && [ "$PORT_INPUT" -le 65535 ] || { warn "范围: 1024-65535"; continue; }
         if ss -tlnp 2>/dev/null | grep -q ":$PORT_INPUT "; then
             warn "端口 $PORT_INPUT 已被占用"
-            echo -ne "  ${CYAN}➤${NC} 仍要使用? (y/N): "
-            read -r FORCE
-            if [[ "$FORCE" =~ ^[Yy]$ ]]; then
+            if confirm "  仍要使用?" "N"; then
                 NEW_PORT=$PORT_INPUT
                 break
             else
                 RANDOM_PORT=$(generate_random_port)
-                echo -e "  ${GREEN}→ 新推荐端口: $RANDOM_PORT${NC}"
+                echo -e "  ${GREEN}→ 新推荐: $RANDOM_PORT${NC}"
+                continue
             fi
-        else
-            NEW_PORT=$PORT_INPUT
-            break
         fi
+        NEW_PORT=$PORT_INPUT
+        break
     done
 
-    # ---- 5. 系统更新（可选） ----
-    step_header "${ICON_SHIELD} 步骤 5/5 · 系统更新选项"
-    echo -e "  ${WHITE}是否更新系统软件包?${NC}"
-    echo -e "  ${YELLOW}(1)${NC} 是，执行更新  ${YELLOW}(2)${NC} 否，跳过"
-    while true; do
-        echo -ne "  ${CYAN}➤${NC} 请选择 [2]: "
-        read -r UPDATE_OPT
-        UPDATE_OPT=${UPDATE_OPT:-2}
-        if [[ "$UPDATE_OPT" =~ ^[12]$ ]]; then
-            break
-        fi
-        warn "请输入 1 或 2"
-    done
-
-    # ---- 配置确认 ----
+    #---- 确认 ----
     clear
     echo -e "${BLUE}╔══════════════════════════════════════════════╗${NC}"
     echo -e "${BLUE}║${NC}          ${WHITE}📋 配置确认清单${NC}                   ${BLUE}║${NC}"
     echo -e "${BLUE}╠══════════════════════════════════════════════╣${NC}"
-    echo -e "${BLUE}║${NC}                                              ${BLUE}║${NC}"
-    echo -e "${BLUE}║${NC}  ${ICON_HOST} 主机名      : ${GREEN}$NEW_HOSTNAME${NC}"
-    echo -e "${BLUE}║${NC}  ${ICON_CLOCK} 时区        : ${GREEN}$TIMEZONE${NC}"
-    echo -e "${BLUE}║${NC}  ${ICON_USER} 新用户      : ${GREEN}$NEW_USER${NC}"
-    echo -e "${BLUE}║${NC}  ${ICON_PORT} SSH端口     : ${GREEN}$NEW_PORT${NC} ${YELLOW}(原:$CURRENT_PORT)${NC}"
-    echo -e "${BLUE}║${NC}  ${ICON_LOCK} Root登录    : ${RED}禁止${NC}"
-    echo -e "${BLUE}║${NC}  ${ICON_SHIELD} 系统更新    : $([ "$UPDATE_OPT" = "1" ] && echo "${GREEN}是${NC}" || echo "${YELLOW}否${NC}")${NC}"
-    echo -e "${BLUE}║${NC}                                              ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC}  ${ICON_HOST} 主机名  : ${GREEN}$NEW_HOSTNAME${NC}"
+    echo -e "${BLUE}║${NC}  ${ICON_CLOCK} 时区    : ${GREEN}$TIMEZONE${NC}"
+    echo -e "${BLUE}║${NC}  ${ICON_USER} 新用户  : ${GREEN}$NEW_USER${NC}"
+    echo -e "${BLUE}║${NC}  ${ICON_PORT} SSH端口 : ${GREEN}$NEW_PORT${NC} ${YELLOW}(原:$CURRENT_PORT)${NC}"
+    echo -e "${BLUE}║${NC}  ${ICON_LOCK} root登录: ${RED}将被禁止${NC}"
     echo -e "${BLUE}╚══════════════════════════════════════════════╝${NC}"
-    
-    echo -ne "\n  ${CYAN}➤${NC} 确认执行以上配置? ${GREEN}(y)${NC}/${RED}(N)${NC}: "
-    read -r CONFIRM
-    [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo -e "\n  ${ICON_WARN} 已取消操作"; exit 0; }
 
-    # ---- 执行配置 ----
+    if ! confirm "  ${CYAN}➤${NC} 确认执行?" "N"; then
+        echo -e "\n  ${ICON_WARN} 已取消"; exit 0
+    fi
+
+    #---- 执行基础配置 ----
     clear
     echo -e "\n${CYAN}┌────────────────────────────────────────┐${NC}"
-    echo -e "${CYAN}│${NC}  ${ICON_ROCKET} 正在执行配置，请稍候...          ${CYAN}│${NC}"
+    echo -e "${CYAN}│${NC}  ${ICON_ROCKET} 正在执行基础配置...            ${CYAN}│${NC}"
     echo -e "${CYAN}└────────────────────────────────────────┘${NC}"
-    
-    TOTAL_STEPS=5
-    CURRENT_STEP=0
 
-    # 1. 主机名配置
-    ((CURRENT_STEP++))
-    echo -e "\n${CYAN}[${CURRENT_STEP}/${TOTAL_STEPS}]${NC} ${ICON_HOST} 修改主机名..."
-    progress_bar 0 1
-    
+    # 主机名
     OLD_HOSTNAME=$(hostname)
-    hostnamectl set-hostname "$NEW_HOSTNAME" 2>/dev/null || true
+    hostnamectl set-hostname "$NEW_HOSTNAME" 2>/dev/null || hostname "$NEW_HOSTNAME" 2>/dev/null || true
     echo "$NEW_HOSTNAME" > /etc/hostname
-    
-    # 更新 /etc/hosts
-    if grep -q "$OLD_HOSTNAME" /etc/hosts 2>/dev/null; then
-        sed -i "s/\b${OLD_HOSTNAME}\b/${NEW_HOSTNAME}/g" /etc/hosts 2>/dev/null || true
-    else
-        echo "127.0.1.1 $NEW_HOSTNAME" >> /etc/hosts
-    fi
-    
-    progress_bar 1 1
+    sed -i "s/\b${OLD_HOSTNAME}\b/${NEW_HOSTNAME}/g" /etc/hosts 2>/dev/null || true
+    grep -q "$NEW_HOSTNAME" /etc/hosts || echo "127.0.1.1 $NEW_HOSTNAME" >> /etc/hosts
     ok "主机名: ${GREEN}$OLD_HOSTNAME${NC} → ${GREEN}$NEW_HOSTNAME${NC}"
 
-    # 2. 时区设置
-    ((CURRENT_STEP++))
-    echo -e "\n${CYAN}[${CURRENT_STEP}/${TOTAL_STEPS}]${NC} ${ICON_CLOCK} 设置时区..."
-    progress_bar 0 1
-    
-    timedatectl set-timezone "$TIMEZONE" 2>/dev/null || true
-    
-    progress_bar 1 1
+    # 时区
+    timedatectl set-timezone "$TIMEZONE" 2>/dev/null || ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime 2>/dev/null || true
     ok "时区: ${GREEN}$TIMEZONE${NC}"
 
-    # 3. 创建用户
-    ((CURRENT_STEP++))
-    echo -e "\n${CYAN}[${CURRENT_STEP}/${TOTAL_STEPS}]${NC} ${ICON_USER} 创建用户..."
-    progress_bar 0 2
-    
-    useradd -m -s /bin/bash "$NEW_USER" 2>/dev/null || { warn "用户创建可能失败，继续..."; }
-    echo "$NEW_USER:$USER_PASS" | chpasswd 2>/dev/null || { warn "密码设置失败"; }
-    
-    # 添加到sudo组
-    if getent group sudo &>/dev/null; then
-        usermod -aG sudo "$NEW_USER" 2>/dev/null || true
-    else
-        groupadd sudo 2>/dev/null || true
-        usermod -aG sudo "$NEW_USER" 2>/dev/null || true
-    fi
-    
-    if getent group wheel &>/dev/null; then
-        usermod -aG wheel "$NEW_USER" 2>/dev/null || true
-    fi
-    
-    progress_bar 1 2
-    ok "用户 ${GREEN}$NEW_USER${NC} 创建成功"
-    
-    echo -ne "\n  ${CYAN}➤${NC} 允许无密码sudo? ${GREEN}(y)${NC}/${RED}(N)${NC}: "
-    read -r NOPASS
-    if [[ "$NOPASS" =~ ^[Yy]$ ]]; then
+    # 用户
+    useradd -m -s /bin/bash "$NEW_USER" 2>/dev/null || adduser -D -s /bin/bash "$NEW_USER" 2>/dev/null || true
+    echo "$NEW_USER:$USER_PASS" | chpasswd 2>/dev/null || passwd "$NEW_USER" <<< "$USER_PASS"$'\n'"$USER_PASS" 2>/dev/null || true
+    getent group sudo &>/dev/null && usermod -aG sudo "$NEW_USER" 2>/dev/null
+    getent group wheel &>/dev/null && usermod -aG wheel "$NEW_USER" 2>/dev/null
+    getent group sudo &>/dev/null || { groupadd sudo 2>/dev/null; usermod -aG sudo "$NEW_USER" 2>/dev/null; }
+    if confirm "  允许 ${NEW_USER} 无密码 sudo?" "N"; then
         echo "$NEW_USER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/$NEW_USER"
         chmod 440 "/etc/sudoers.d/$NEW_USER"
-        ok "已配置${GREEN}无密码${NC}sudo"
+        ok "已配置无密码 sudo"
     else
-        ok "sudo权限已授予${YELLOW}(需密码)${NC}"
+        ok "sudo 权限已授予 (需密码)"
     fi
-    
-    progress_bar 2 2
 
-    # 4. SSH配置
-    ((CURRENT_STEP++))
-    echo -e "\n${CYAN}[${CURRENT_STEP}/${TOTAL_STEPS}]${NC} ${ICON_PORT} 配置SSH服务..."
-    progress_bar 0 5
-    
+    # SSH
     SSH_SERVICE=$(detect_ssh_service)
     SSHD_CONFIG="/etc/ssh/sshd_config"
-    SSHD_CONFIG_TEMP="/tmp/sshd_config.new"
-    
-    # 备份
+    [ -f "$SSHD_CONFIG" ] || SSHD_CONFIG="/etc/ssh/ssh_config"
     cp "$SSHD_CONFIG" "$BACKUP_DIR/sshd_config.bak" 2>/dev/null || true
-    cp "$SSHD_CONFIG" /etc/ssh/sshd_config.bak."$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
-    
-    progress_bar 1 5
+    safe_sed "$SSHD_CONFIG" "Port" "Port $NEW_PORT"
+    safe_sed "$SSHD_CONFIG" "PermitRootLogin" "PermitRootLogin no"
+    safe_sed "$SSHD_CONFIG" "PasswordAuthentication" "PasswordAuthentication yes"
+    safe_sed "$SSHD_CONFIG" "PubkeyAuthentication" "PubkeyAuthentication yes"
+    safe_sed "$SSHD_CONFIG" "PermitEmptyPasswords" "PermitEmptyPasswords no"
+    safe_sed "$SSHD_CONFIG" "X11Forwarding" "X11Forwarding no"
+    grep -q "^Protocol" "$SSHD_CONFIG" 2>/dev/null || echo "Protocol 2" >> "$SSHD_CONFIG"
 
-    # 修改SSH配置
-    cp "$SSHD_CONFIG" "$SSHD_CONFIG_TEMP"
-    
-    safe_sed "$SSHD_CONFIG_TEMP" "Port" "Port $NEW_PORT"
-    safe_sed "$SSHD_CONFIG_TEMP" "PermitRootLogin" "PermitRootLogin no"
-    safe_sed "$SSHD_CONFIG_TEMP" "PasswordAuthentication" "PasswordAuthentication yes"
-    safe_sed "$SSHD_CONFIG_TEMP" "PubkeyAuthentication" "PubkeyAuthentication yes"
-    safe_sed "$SSHD_CONFIG_TEMP" "X11Forwarding" "X11Forwarding no"
-    safe_sed "$SSHD_CONFIG_TEMP" "MaxAuthTries" "MaxAuthTries 3"
-    safe_sed "$SSHD_CONFIG_TEMP" "ClientAliveInterval" "ClientAliveInterval 300"
-    
-    # 确保只允许 Protocol 2
-    grep -q "^Protocol" "$SSHD_CONFIG_TEMP" 2>/dev/null || echo "Protocol 2" >> "$SSHD_CONFIG_TEMP"
-    
-    # 添加额外的安全选项
-    if ! grep -q "^AllowUsers" "$SSHD_CONFIG_TEMP"; then
-        echo "AllowUsers $NEW_USER" >> "$SSHD_CONFIG_TEMP"
-    fi
-    
-    progress_bar 2 5
-
-    # 验证配置
-    if validate_sshd_config "$SSHD_CONFIG_TEMP"; then
-        mv "$SSHD_CONFIG_TEMP" "$SSHD_CONFIG"
-        progress_bar 3 5
-        ok "SSH配置已更新"
-    else
-        warn "SSH配置验证失败，恢复备份..."
-        cp "$BACKUP_DIR/sshd_config.bak" "$SSHD_CONFIG"
-        rm -f "$SSHD_CONFIG_TEMP"
-        err "SSH配置恢复为原配置"
-    fi
-
-    # 配置防火墙
-    if command -v ufw &>/dev/null; then
-        ufw allow "$NEW_PORT"/tcp 2>/dev/null && log "  ufw已开放端口 $NEW_PORT" || true
-    fi
-    
+    # 防火墙
+    if command -v ufw &>/dev/null; then ufw allow "$NEW_PORT"/tcp 2>/dev/null; fi
     if command -v firewall-cmd &>/dev/null; then
-        firewall-cmd --permanent --add-port="$NEW_PORT"/tcp 2>/dev/null && \
-        firewall-cmd --reload 2>/dev/null && \
-        log "  firewalld已开放端口 $NEW_PORT" || true
+        firewall-cmd --permanent --add-port="$NEW_PORT"/tcp 2>/dev/null && firewall-cmd --reload 2>/dev/null
     fi
-    
-    progress_bar 4 5
 
-    # 重启SSH服务
-    echo -e "\n  ${ICON_WARN} 重启SSH服务..."
-    if systemctl restart "$SSH_SERVICE" 2>/dev/null; then
-        progress_bar 5 5
-        ok "SSH服务已重启 ${GREEN}✓${NC}"
+    # 重启 SSH
+    if sshd -t 2>/dev/null; then
+        restart_ssh "$SSH_SERVICE"
+        ok "SSH 服务已重启，新端口: ${GREEN}$NEW_PORT${NC}"
     else
-        warn "systemctl重启失败，尝试service命令..."
-        if service ssh restart 2>/dev/null || service sshd restart 2>/dev/null; then
-            ok "SSH服务已重启 ${GREEN}✓${NC}"
-        else
-            err "SSH服务重启失败"
-        fi
+        warn "SSH 配置测试失败，恢复备份..."
+        cp "$BACKUP_DIR/sshd_config.bak" "$SSHD_CONFIG" 2>/dev/null
+        restart_ssh "$SSH_SERVICE"
+        err "已恢复原配置"
     fi
 
-    # 5. 系统更新（可选）
-    if [ "$UPDATE_OPT" = "1" ]; then
-        ((CURRENT_STEP++))
-        echo -e "\n${CYAN}[${CURRENT_STEP}/${TOTAL_STEPS}]${NC} ${ICON_SHIELD} 更新系统软件包..."
-        progress_bar 0 1
-        
-        if command -v apt-get &>/dev/null; then
-            apt-get update >/dev/null 2>&1 && apt-get upgrade -y >/dev/null 2>&1 && \
-            ok "软件包已更新（apt）" || warn "apt更新可能失败"
-        elif command -v yum &>/dev/null; then
-            yum update -y >/dev/null 2>&1 && \
-            ok "软件包已更新（yum）" || warn "yum更新可能失败"
-        elif command -v dnf &>/dev/null; then
-            dnf update -y >/dev/null 2>&1 && \
-            ok "软件包已更新（dnf）" || warn "dnf更新可能失败"
-        else
-            warn "无法识别包管理器，跳过更新"
-        fi
-        
-        progress_bar 1 1
-    fi
+    # 扩展菜单
+    extended_features
 
-    # ---- 完成 ----
+    # 完成
     IP_ADDR=$(curl -s4 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "未知")
-    
     clear
     echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║${NC}                                              ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}       ${ICON_DONE}  初始化完成！${ICON_DONE}                  ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}       ${ICON_DONE}  初始化全部完成！${ICON_DONE}                ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                              ${GREEN}║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════╣${NC}"
-    echo -e "${GREEN}║${NC}                                              ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  ${ICON_HOST} 主机名 : ${WHITE}$NEW_HOSTNAME${NC}"
     echo -e "${GREEN}║${NC}  ${ICON_CLOCK} 时区   : ${WHITE}$TIMEZONE${NC}"
     echo -e "${GREEN}║${NC}  ${ICON_USER} 用户   : ${WHITE}$NEW_USER${NC}"
     echo -e "${GREEN}║${NC}  ${ICON_PORT} SSH端口: ${WHITE}$NEW_PORT${NC} ${YELLOW}(原:$CURRENT_PORT)${NC}"
+    echo -e "${GREEN}║${NC}  ${ICON_LOCK} root登录: ${RED}已禁止${NC}"
     echo -e "${GREEN}║${NC}  ${ICON_INFO} IP地址 : ${WHITE}$IP_ADDR${NC}"
-    echo -e "${GREEN}║${NC}                                              ${GREEN}║${NC}"
     echo -e "${GREEN}╠══════════════════════════════════════════════╣${NC}"
-    echo -e "${GREEN}║${NC}                                              ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  ${ICON_WARN} ${YELLOW}测试连接 (不要关闭当前会话):${NC}         ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  ${ICON_WARN} ${YELLOW}立即测试连接 (不要关闭当前会话):${NC}     ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  ${WHITE}ssh -p $NEW_PORT $NEW_USER@$IP_ADDR${NC}"
-    echo -e "${GREEN}║${NC}                                              ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  ${ICON_INFO} 备份目录: ${WHITE}$BACKUP_DIR${NC}"
-    echo -e "${GREEN}║${NC}  ${ICON_INFO} 日志文件: ${WHITE}$LOG_FILE${NC}"
-    echo -e "${GREEN}║${NC}                                              ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  ${ICON_INFO} 备份: ${WHITE}$BACKUP_DIR${NC}"
+    echo -e "${GREEN}║${NC}  ${ICON_INFO} 日志: ${WHITE}$LOG_FILE${NC}"
     echo -e "${GREEN}╚══════════════════════════════════════════════╝${NC}"
     echo ""
-    
-    log "========== VPS初始化完成 =========="
 }
 
 main "$@"
