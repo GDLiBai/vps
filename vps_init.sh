@@ -1,7 +1,7 @@
 #!/bin/bash
 #==================================================
-# VPS 一键初始化 & 管理脚本 v3.0.1
-# 修复颜色显示 + UI 优化
+# VPS 一键初始化 & 管理脚本 v3.0.2
+# 新增：脚本自毁功能
 # 时区：Asia/Hong_Kong
 #==================================================
 set -o pipefail
@@ -23,16 +23,14 @@ ICON_ROCKET="🚀"; ICON_LOCK="🔒"; ICON_USER="👤"; ICON_HOST="🖥️"
 ICON_CLOCK="🕐"; ICON_PORT="🔌"; ICON_DONE="🎉"; ICON_PKG="📦"
 ICON_SWAP="💾"; ICON_CLIENT="🔗"; ICON_IPV4="🌐"; ICON_IPV6="🌏"
 ICON_CPU="🧠"; ICON_DISK="💿"; ICON_AUTO="🔄"; ICON_MENU="📋"
+ICON_TRASH="🗑️"
 
-#-------- 输出函数（直接使用颜色变量）--------
-print_line()   { echo -e "${1}${2}${NC}"; }
-print_title()  { echo -e "${1}${2}${NC}"; }
-print_row()    { printf "  %-12s %s\n" "$1" "$2"; }
-
-log()    { echo -e "$(date '+%H:%M:%S') $*" | tee -a "$LOG_FILE"; }
-ok()     { log "  ${ICON_OK} $*"; }
-warn()   { log "  ${ICON_WARN} $*"; }
-err()    { log "  ${ICON_ERR} $*"; exit 1; }
+#-------- 输出函数 --------
+print_row()  { printf "  %-12s %s\n" "$1" "$2"; }
+log()        { echo -e "$(date '+%H:%M:%S') $*" | tee -a "$LOG_FILE"; }
+ok()         { log "  ${ICON_OK} $*"; }
+warn()       { log "  ${ICON_WARN} $*"; }
+err()        { log "  ${ICON_ERR} $*"; exit 1; }
 
 check_root() {
     [ "$EUID" -eq 0 ] || { echo -e "${RED}${ICON_ERR} 请使用root运行${NC}"; exit 1; }
@@ -169,7 +167,7 @@ get_client_ip() {
     echo "未知"
 }
 
-# ★ 系统信息（直接 echo -e）
+# ★ 系统信息
 show_system_info() {
     clear
     echo -e "${BLUE}════════════════════════════════════════════════${NC}"
@@ -213,7 +211,7 @@ show_system_info() {
     read -rp "  按回车键继续..." dummy
 }
 
-# ★ 管理菜单
+# ★ 用户管理菜单
 manage_users_menu() {
     while true; do
         clear
@@ -292,6 +290,37 @@ delete_user() {
     fi
 }
 
+# ★ 脚本自毁
+self_destruct() {
+    echo ""
+    echo -e "  ${RED}${ICON_WARN} 警告：此操作将删除脚本及所有相关文件！${NC}"
+    echo -e "  ${YELLOW}（不会撤销已修改的系统配置）${NC}"
+    echo ""
+    if ! confirm "  确认删除脚本?" "N"; then
+        echo -e "  ${ICON_INFO} 已取消"
+        read -rp "  按回车键返回..." dummy
+        return
+    fi
+    echo ""
+    # 删除快捷命令
+    if [ -f /usr/local/bin/vps ]; then
+        rm -f /usr/local/bin/vps && ok "已删除 /usr/local/bin/vps"
+    fi
+    # 删除备份
+    rm -rf /root/vps_backup_* 2>/dev/null && ok "已清理备份文件"
+    # 删除日志
+    rm -f /var/log/vps_init_*.log 2>/dev/null && ok "已清理日志文件"
+    echo ""
+    echo -e "  ${ICON_DONE} ${GREEN}脚本已完全删除，退出...${NC}"
+    echo ""
+    # 删除脚本自身（放在最后）
+    SCRIPT_PATH="$(readlink -f "$0")"
+    rm -f /root/vps_init.sh 2>/dev/null
+    rm -f "$SCRIPT_PATH" 2>/dev/null
+    exit 0
+}
+
+# ★ 管理菜单
 management_menu() {
     while true; do
         clear
@@ -304,6 +333,7 @@ management_menu() {
         echo -e "  ${GREEN}3${NC}) ${ICON_PORT} 修改 SSH 端口"
         echo -e "  ${GREEN}4${NC}) ${ICON_SWAP} 创建 Swap 虚拟内存"
         echo -e "  ${GREEN}5${NC}) ${ICON_INFO} 查看系统信息"
+        echo -e "  ${RED}9${NC}) ${RED}${ICON_TRASH} 删除此脚本${NC}"
         echo -e "  ${GREEN}0${NC}) 退出"
         echo ""
         echo -ne "  ${CYAN}➤${NC} 请选择 [0]: "
@@ -315,6 +345,7 @@ management_menu() {
             3) change_ssh_port ;;
             4) create_swap_menu ;;
             5) show_system_info; read -rp "  按回车键返回..." dummy ;;
+            9) self_destruct; break ;;
             0) break ;;
             *) warn "无效选项" ;;
         esac
@@ -430,7 +461,7 @@ main() {
 
     clear
     echo -e "${BLUE}════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}     🚀 VPS 一键初始化脚本 v3.0.1${NC}"
+    echo -e "${BLUE}     🚀 VPS 一键初始化脚本 v3.0.2${NC}"
     echo -e "${BLUE}════════════════════════════════════════════════${NC}"
 
     # 1. 主机名
