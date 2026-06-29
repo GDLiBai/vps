@@ -1,7 +1,7 @@
 #!/bin/bash
 #==================================================
-# VPS 一键安全初始化脚本 v2.2.0
-# 新用户默认需密码sudo | 管理菜单 | vps快捷键
+# VPS 一键初始化 & 管理脚本 v3.0.0
+# 架构优化 / UI 美化 / 管理菜单增强
 # 时区：Asia/Hong_Kong
 #==================================================
 set -o pipefail
@@ -100,7 +100,6 @@ validate_username() {
     local u="$1" r
     local reserved=(root bin daemon adm lp sync shutdown halt mail news uucp operator games gopher ftp nobody)
     for r in "${reserved[@]}"; do [ "$u" = "$r" ] && { warn "系统保留用户: $u"; return 1; }; done
-    id "$u" &>/dev/null && { warn "用户 $u 已存在"; return 1; }
     [[ "$u" =~ ^[a-z_][a-z0-9_-]*$ ]] || { warn "用户名格式错误"; return 1; }
     return 0
 }
@@ -168,11 +167,12 @@ get_client_ip() {
     echo "未知"
 }
 
+# ★ 美化版系统信息
 show_system_info() {
     clear
-    printf "%b\n" "${BLUE}╔══════════════════════════════════════════════╗${NC}"
-    printf "%b\n" "${BLUE}║${NC}           ${WHITE}📋 当前系统配置${NC}                     ${BLUE}║${NC}"
-    printf "%b\n" "${BLUE}╚══════════════════════════════════════════════╝${NC}"
+    printf "%b\n" "${BLUE}════════════════════════════════════════════════${NC}"
+    printf "%b\n" "${BLUE}              📋 当前系统配置${NC}"
+    printf "%b\n" "${BLUE}════════════════════════════════════════════════${NC}"
     if [ -f /etc/os-release ]; then . /etc/os-release; OS_NAME="${PRETTY_NAME:-$NAME $VERSION}"; else OS_NAME="未知"; fi
     KERNEL="$(uname -r) ($(uname -m))"
     CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d':' -f2 | xargs || echo "未知")
@@ -194,78 +194,64 @@ show_system_info() {
     CURRENT_TZ=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "未知")
     SWAP_TOTAL=$(swapon --show=size 2>/dev/null | awk 'NR>1{sum+=$1} END{print sum}')
     [ -z "$SWAP_TOTAL" ] || [ "$SWAP_TOTAL" -eq 0 ] && SWAP_INFO="无" || SWAP_INFO="${SWAP_TOTAL}MB"
-    printf "%b\n" "  ${ICON_INFO} 系统    : ${GREEN}${OS_NAME}${NC}"
-    printf "%b\n" "  ${ICON_INFO} 内核    : ${GREEN}${KERNEL}${NC}"
-    printf "%b\n" "  ${ICON_CPU} CPU     : ${GREEN}${CPU_MODEL} (${CPU_CORES} 核)${NC}"
-    printf "%b\n" "  ${ICON_INFO} 内存    : ${GREEN}${MEM_INFO}${NC}"
-    printf "%b\n" "  ${ICON_DISK} 磁盘    : ${GREEN}${DISK_INFO}${NC}"
-    printf "%b\n" "  ${ICON_IPV4} IPv4    : ${GREEN}${IPV4}${NC}"
-    printf "%b\n" "  ${ICON_IPV6} IPv6    : ${GREEN}${IPV6}${NC}"
-    printf "%b\n" "  ${ICON_CLIENT} 连接IP  : ${GREEN}${CLIENT_IP}${NC}"
-    printf "%b\n" "  ${ICON_PORT} SSH端口 : ${YELLOW}${CURRENT_SSH}${NC}"
-    printf "%b\n" "  ${ICON_CLOCK} 时区    : ${YELLOW}${CURRENT_TZ}${NC}"
-    printf "%b\n" "  ${ICON_SWAP} Swap    : ${YELLOW}${SWAP_INFO}${NC}"
+
+    printf "  %-12s %s\n"   "${ICON_INFO} 系统"   ": ${GREEN}${OS_NAME}${NC}"
+    printf "  %-12s %s\n"   "${ICON_INFO} 内核"   ": ${GREEN}${KERNEL}${NC}"
+    printf "  %-12s %s\n"   "${ICON_CPU} CPU"     ": ${GREEN}${CPU_MODEL} (${CPU_CORES} 核)${NC}"
+    printf "  %-12s %s\n"   "${ICON_INFO} 内存"   ": ${GREEN}${MEM_INFO}${NC}"
+    printf "  %-12s %s\n"   "${ICON_DISK} 磁盘"   ": ${GREEN}${DISK_INFO}${NC}"
+    printf "  %-12s %s\n"   "${ICON_IPV4} IPv4"   ": ${GREEN}${IPV4}${NC}"
+    printf "  %-12s %s\n"   "${ICON_IPV6} IPv6"   ": ${GREEN}${IPV6}${NC}"
+    printf "  %-12s %s\n"   "${ICON_CLIENT} 连接IP" ": ${GREEN}${CLIENT_IP}${NC}"
+    printf "  %-12s %s\n"   "${ICON_PORT} SSH端口" ": ${YELLOW}${CURRENT_SSH}${NC}"
+    printf "  %-12s %s\n"   "${ICON_CLOCK} 时区"   ": ${YELLOW}${CURRENT_TZ}${NC}"
+    printf "  %-12s %s\n"   "${ICON_SWAP} Swap"    ": ${YELLOW}${SWAP_INFO}${NC}"
     printf "\n"
-    read -rp "  按回车键开始初始化..." dummy
+    read -rp "  按回车键继续..." dummy
 }
 
-# ★ 管理菜单（vps 快捷键调用）
-management_menu() {
+# ★ 管理用户菜单
+manage_users_menu() {
     while true; do
         clear
-        printf "%b\n" "${BLUE}╔══════════════════════════════════════════════╗${NC}"
-        printf "%b\n" "${BLUE}║${NC}           ${WHITE}📋 VPS 管理菜单${NC}                     ${BLUE}║${NC}"
-        printf "%b\n" "${BLUE}╚══════════════════════════════════════════════╝${NC}"
+        printf "%b\n" "${CYAN}════════════════════════════════════════════════${NC}"
+        printf "%b\n" "${CYAN}              👤 用户管理${NC}"
+        printf "%b\n" "${CYAN}════════════════════════════════════════════════${NC}"
         echo ""
-        printf "%b\n" "  ${GREEN}1${NC}) ${ICON_HOST} 修改主机名"
-        printf "%b\n" "  ${GREEN}2${NC}) ${ICON_USER} 新建用户"
-        printf "%b\n" "  ${GREEN}3${NC}) ${ICON_PORT} 修改 SSH 端口"
-        printf "%b\n" "  ${GREEN}4${NC}) ${ICON_PKG} 安装基础软件包"
-        printf "%b\n" "  ${GREEN}5${NC}) ${ICON_SWAP} 创建 Swap"
-        printf "%b\n" "  ${GREEN}6${NC}) ${ICON_INFO} 查看系统信息"
-        printf "%b\n" "  ${GREEN}0${NC}) 退出"
+        # 列出所有可登录用户
+        printf "%b\n" "  ${WHITE}现有用户:${NC}"
+        awk -F: '($3>=1000 && $7 !~ /nologin|false/){printf "    %-15s (UID:%s)\n", $1, $3}' /etc/passwd
+        echo ""
+        printf "%b\n" "  ${GREEN}1${NC}) 新建用户"
+        printf "%b\n" "  ${GREEN}2${NC}) 修改用户密码"
+        printf "%b\n" "  ${GREEN}3${NC}) 删除用户"
+        printf "%b\n" "  ${GREEN}0${NC}) 返回"
         echo ""
         printf "%b" "  ${CYAN}➤${NC} 请选择 [0]: "
         read CHOICE
         CHOICE=${CHOICE:-0}
         case $CHOICE in
-            1) change_hostname ;;
-            2) create_new_user ;;
-            3) change_ssh_port ;;
-            4) install_base_packages ;;
-            5) create_swap_menu ;;
-            6) show_system_info; read -rp "  按回车键返回..." dummy ;;
+            1) create_new_user ;;
+            2) change_user_password ;;
+            3) delete_user ;;
             0) break ;;
             *) warn "无效选项" ;;
         esac
     done
 }
 
-change_hostname() {
-    local new_host
-    while true; do
-        read_nonempty "  ${CYAN}➤${NC} 新主机名: " new_host
-        validate_hostname "$new_host" && break
-    done
-    local old_host=$(hostname)
-    hostnamectl set-hostname "$new_host" 2>/dev/null || hostname "$new_host" 2>/dev/null || true
-    echo "$new_host" > /etc/hostname
-    sed -i "s/\b${old_host}\b/${new_host}/g" /etc/hosts 2>/dev/null || true
-    grep -q "$new_host" /etc/hosts || echo "127.0.1.1 $new_host" >> /etc/hosts
-    ok "主机名: ${GREEN}$old_host${NC} → ${GREEN}$new_host${NC}"
-}
-
 create_new_user() {
     local new_user user_pass user_pass2
     while true; do
-        read_nonempty "  ${CYAN}➤${NC} 用户名: " new_user
+        read_nonempty "  用户名: " new_user
         validate_username "$new_user" && break
     done
+    id "$new_user" &>/dev/null && { warn "用户 $new_user 已存在"; return; }
     while true; do
-        printf "%b" "  ${CYAN}➤${NC} 密码 (至少6位): "
+        printf "%b" "  密码 (至少6位): "
         read -s user_pass; echo
         [ ${#user_pass} -ge 6 ] || { warn "长度不足6位"; continue; }
-        printf "%b" "  ${CYAN}➤${NC} 确认密码: "
+        printf "%b" "  确认密码: "
         read -s user_pass2; echo
         [ "$user_pass" = "$user_pass2" ] && break || warn "两次不一致"
     done
@@ -277,10 +263,81 @@ create_new_user() {
     ok "用户 ${GREEN}$new_user${NC} 创建成功 (sudo 需密码)"
 }
 
+change_user_password() {
+    local target_user user_pass user_pass2
+    read_nonempty "  要修改密码的用户名: " target_user
+    id "$target_user" &>/dev/null || { warn "用户 $target_user 不存在"; return; }
+    while true; do
+        printf "%b" "  新密码 (至少6位): "
+        read -s user_pass; echo
+        [ ${#user_pass} -ge 6 ] || { warn "长度不足6位"; continue; }
+        printf "%b" "  确认新密码: "
+        read -s user_pass2; echo
+        [ "$user_pass" = "$user_pass2" ] && break || warn "两次不一致"
+    done
+    echo "$target_user:$user_pass" | chpasswd 2>/dev/null || passwd "$target_user" <<< "$user_pass"$'\n'"$user_pass" 2>/dev/null
+    ok "用户 ${GREEN}$target_user${NC} 密码已修改"
+}
+
+delete_user() {
+    local target_user
+    read_nonempty "  要删除的用户名: " target_user
+    id "$target_user" &>/dev/null || { warn "用户 $target_user 不存在"; return; }
+    [ "$target_user" = "root" ] && { warn "不能删除 root 用户"; return; }
+    if confirm "  确认删除用户 ${target_user} 及其主目录?" "N"; then
+        userdel -r "$target_user" 2>/dev/null || deluser --remove-home "$target_user" 2>/dev/null
+        ok "用户 ${GREEN}$target_user${NC} 已删除"
+    fi
+}
+
+# ★ 管理菜单（vps 快捷键调用）
+management_menu() {
+    while true; do
+        clear
+        printf "%b\n" "${BLUE}════════════════════════════════════════════════${NC}"
+        printf "%b\n" "${BLUE}              📋 VPS 管理菜单${NC}"
+        printf "%b\n" "${BLUE}════════════════════════════════════════════════${NC}"
+        echo ""
+        printf "%b\n" "  ${GREEN}1${NC}) ${ICON_HOST} 修改主机名"
+        printf "%b\n" "  ${GREEN}2${NC}) ${ICON_USER} 管理用户 (新建/修改/删除)"
+        printf "%b\n" "  ${GREEN}3${NC}) ${ICON_PORT} 修改 SSH 端口"
+        printf "%b\n" "  ${GREEN}4${NC}) ${ICON_SWAP} 创建 Swap 虚拟内存"
+        printf "%b\n" "  ${GREEN}5${NC}) ${ICON_INFO} 查看系统信息"
+        printf "%b\n" "  ${GREEN}0${NC}) 退出"
+        echo ""
+        printf "%b" "  ${CYAN}➤${NC} 请选择 [0]: "
+        read CHOICE
+        CHOICE=${CHOICE:-0}
+        case $CHOICE in
+            1) change_hostname ;;
+            2) manage_users_menu ;;
+            3) change_ssh_port ;;
+            4) create_swap_menu ;;
+            5) show_system_info; read -rp "  按回车键返回..." dummy ;;
+            0) break ;;
+            *) warn "无效选项" ;;
+        esac
+    done
+}
+
+change_hostname() {
+    local new_host
+    while true; do
+        read_nonempty "  新主机名: " new_host
+        validate_hostname "$new_host" && break
+    done
+    local old_host=$(hostname)
+    hostnamectl set-hostname "$new_host" 2>/dev/null || hostname "$new_host" 2>/dev/null || true
+    echo "$new_host" > /etc/hostname
+    sed -i "s/\b${old_host}\b/${new_host}/g" /etc/hosts 2>/dev/null || true
+    grep -q "$new_host" /etc/hosts || echo "127.0.1.1 $new_host" >> /etc/hosts
+    ok "主机名: ${GREEN}$old_host${NC} → ${GREEN}$new_host${NC}"
+}
+
 change_ssh_port() {
     local current=$(show_current_port) rand_port=$(generate_random_port) new_port input
-    printf "%b\n" "  当前端口: ${YELLOW}$current${NC}  随机推荐: ${GREEN}$rand_port${NC}"
-    printf "%b" "  ${CYAN}➤${NC} 新端口 [随机:$rand_port]: "
+    printf "  当前端口: ${YELLOW}$current${NC}  随机推荐: ${GREEN}$rand_port${NC}\n"
+    printf "%b" "  新端口 [随机:$rand_port]: "
     read input
     input=$(echo "$input" | xargs)
     [ -z "$input" ] && new_port=$rand_port || new_port=$input
@@ -302,12 +359,6 @@ change_ssh_port() {
     fi
 }
 
-install_base_packages() {
-    printf "\n%b\n" "  ${ICON_PKG} 安装基础软件包..."
-    pkg_install curl wget vim git htop net-tools unzip zip lrzsz
-    ok "基础软件包安装完成"
-}
-
 create_swap_menu() {
     swapon --show 2>/dev/null | grep -q "swap" && { ok "Swap 已存在，跳过"; return; }
     local mem_mb=$(free -m | awk '/^Mem:/{print $2}') swap_size
@@ -324,12 +375,16 @@ create_swap_menu() {
     ok "Swap 创建成功 (${swap_size}MB)"
 }
 
-# 自动安全更新
+# ★ 安装基础软件包（内部调用，不显示在菜单）
+install_base_packages_quiet() {
+    pkg_install curl wget vim git htop net-tools unzip zip lrzsz 2>/dev/null
+}
+
+# ★ 自动安全更新
 enable_auto_updates() {
-    printf "\n%b\n" "  ${ICON_AUTO} 配置自动安全更新..."
     case $PKG_MGR in
         apt)
-            pkg_install unattended-upgrades
+            pkg_install unattended-upgrades 2>/dev/null
             cat > /etc/apt/apt.conf.d/20auto-upgrades << EOF
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
@@ -340,7 +395,7 @@ EOF
             ok "Unattended Upgrades 已启用"
             ;;
         dnf|yum)
-            pkg_install dnf-automatic
+            pkg_install dnf-automatic 2>/dev/null
             sed -i 's/apply_updates = no/apply_updates = yes/' /etc/dnf/automatic.conf
             systemctl enable --now dnf-automatic.timer 2>/dev/null
             ok "dnf-automatic 已启用"
@@ -352,7 +407,7 @@ EOF
     esac
 }
 
-# 创建 vps 快捷命令
+# ★ 创建 vps 快捷命令
 install_vps_shortcut() {
     local target="/usr/local/bin/vps"
     if [ -f "$0" ] && [ "$0" != "bash" ] && [ "$0" != "/dev/fd/63" ]; then
@@ -375,62 +430,62 @@ main() {
     mkdir -p "$(dirname "$LOG_FILE")" "$BACKUP_DIR"
     log "VPS 初始化开始"
 
+    # 静默安装基础软件包
+    printf "  ${ICON_PKG} 正在安装基础软件包..."
+    install_base_packages_quiet
+    ok "基础软件包安装完成"
+
     show_system_info
 
     clear
-    printf "%b\n" "${BLUE}╔══════════════════════════════════════════════╗${NC}"
-    printf "%b\n" "${BLUE}║${NC}    ${ICON_ROCKET} VPS 一键初始化脚本 v2.2.0${NC}               ${BLUE}║${NC}"
-    printf "%b\n" "${BLUE}╚══════════════════════════════════════════════╝${NC}"
+    printf "%b\n" "${BLUE}════════════════════════════════════════════════${NC}"
+    printf "%b\n" "${BLUE}     🚀 VPS 一键初始化脚本 v3.0.0${NC}"
+    printf "%b\n" "${BLUE}════════════════════════════════════════════════${NC}"
 
     #---- 1. 主机名 ----
-    printf "\n%b\n" "${CYAN}┌────────────────────────────────────────┐${NC}"
-    printf "%b\n" "${CYAN}│${NC}  ${ICON_HOST} 步骤 1/3 · 主机名"
-    printf "%b\n" "${CYAN}└────────────────────────────────────────┘${NC}"
+    printf "\n%b\n" "  ${ICON_HOST} 步骤 1/3 · 设置主机名"
+    printf "%b\n" "  ${CYAN}────────────────────────────────────────${NC}"
     while true; do
-        read_nonempty "  ${CYAN}➤${NC} 新主机名: " NEW_HOSTNAME
+        read_nonempty "  新主机名: " NEW_HOSTNAME
         validate_hostname "$NEW_HOSTNAME" && break
     done
 
     TIMEZONE="Asia/Hong_Kong"
-    printf "\n%b\n" "${CYAN}┌────────────────────────────────────────┐${NC}"
-    printf "%b\n" "${CYAN}│${NC}  ${ICON_CLOCK} 时区已预设: ${GREEN}${TIMEZONE}${NC}"
-    printf "%b\n" "${CYAN}└────────────────────────────────────────┘${NC}"
+    printf "\n%b\n" "  ${ICON_CLOCK} 时区已预设: ${GREEN}${TIMEZONE}${NC}"
 
     #---- 2. 新用户 ----
-    printf "\n%b\n" "${CYAN}┌────────────────────────────────────────┐${NC}"
-    printf "%b\n" "${CYAN}│${NC}  ${ICON_USER} 步骤 2/3 · 创建管理员用户 (sudo需密码)"
-    printf "%b\n" "${CYAN}└────────────────────────────────────────┘${NC}"
+    printf "\n%b\n" "  ${ICON_USER} 步骤 2/3 · 创建管理员用户 (sudo需密码)"
+    printf "%b\n" "  ${CYAN}────────────────────────────────────────${NC}"
     while true; do
-        read_nonempty "  ${CYAN}➤${NC} 用户名: " NEW_USER
+        read_nonempty "  用户名: " NEW_USER
         validate_username "$NEW_USER" && break
     done
     while true; do
-        printf "%b" "  ${CYAN}➤${NC} 密码 (至少6位): "
+        printf "%b" "  密码 (至少6位): "
         read -s USER_PASS; echo
         [ ${#USER_PASS} -ge 6 ] || { warn "长度不足6位"; continue; }
-        printf "%b" "  ${CYAN}➤${NC} 确认密码: "
+        printf "%b" "  确认密码: "
         read -s USER_PASS2; echo
         [ "$USER_PASS" = "$USER_PASS2" ] && break || warn "两次不一致"
     done
 
     #---- 3. SSH端口 ----
-    printf "\n%b\n" "${CYAN}┌────────────────────────────────────────┐${NC}"
-    printf "%b\n" "${CYAN}│${NC}  ${ICON_PORT} 步骤 3/3 · SSH端口"
-    printf "%b\n" "${CYAN}└────────────────────────────────────────┘${NC}"
+    printf "\n%b\n" "  ${ICON_PORT} 步骤 3/3 · 设置 SSH 端口"
+    printf "%b\n" "  ${CYAN}────────────────────────────────────────${NC}"
     CURRENT_PORT=$(show_current_port)
     RANDOM_PORT=$(generate_random_port)
-    printf "%b\n" "  当前端口: ${YELLOW}$CURRENT_PORT${NC}  随机推荐: ${GREEN}$RANDOM_PORT${NC}"
+    printf "  当前端口: ${YELLOW}$CURRENT_PORT${NC}  随机推荐: ${GREEN}$RANDOM_PORT${NC}\n"
     while true; do
-        printf "%b" "  ${CYAN}➤${NC} 新端口 [随机:$RANDOM_PORT]: "
+        printf "%b" "  新端口 [随机:$RANDOM_PORT]: "
         read PORT_INPUT
         PORT_INPUT=$(echo "$PORT_INPUT" | xargs)
-        if [ -z "$PORT_INPUT" ]; then NEW_PORT=$RANDOM_PORT; printf "%b\n" "  ${GREEN}→ 随机端口: $NEW_PORT${NC}"; break; fi
+        if [ -z "$PORT_INPUT" ]; then NEW_PORT=$RANDOM_PORT; printf "  ${GREEN}→ 随机端口: $NEW_PORT${NC}\n"; break; fi
         [[ "$PORT_INPUT" =~ ^[0-9]+$ ]] || { warn "端口必须是数字"; continue; }
         [ "$PORT_INPUT" -ge 1024 ] && [ "$PORT_INPUT" -le 65535 ] || { warn "范围: 1024-65535"; continue; }
         if ss -tlnp 2>/dev/null | grep -q ":$PORT_INPUT "; then
             warn "端口 $PORT_INPUT 已被占用"
             if confirm "  仍要使用?" "N"; then NEW_PORT=$PORT_INPUT; break
-            else RANDOM_PORT=$(generate_random_port); printf "%b\n" "  ${GREEN}→ 新推荐: $RANDOM_PORT${NC}"; continue; fi
+            else RANDOM_PORT=$(generate_random_port); printf "  ${GREEN}→ 新推荐: $RANDOM_PORT${NC}\n"; continue; fi
         fi
         NEW_PORT=$PORT_INPUT
         break
@@ -438,26 +493,26 @@ main() {
 
     #---- 确认 ----
     clear
-    printf "%b\n" "${BLUE}╔══════════════════════════════════════════════╗${NC}"
-    printf "%b\n" "${BLUE}║${NC}          ${WHITE}📋 配置确认${NC}                         ${BLUE}║${NC}"
-    printf "%b\n" "${BLUE}╠══════════════════════════════════════════════╣${NC}"
-    printf "%b\n" "${BLUE}║${NC}  ${ICON_HOST} 主机名  : ${GREEN}$NEW_HOSTNAME${NC}"
-    printf "%b\n" "${BLUE}║${NC}  ${ICON_CLOCK} 时区    : ${GREEN}$TIMEZONE${NC}"
-    printf "%b\n" "${BLUE}║${NC}  ${ICON_USER} 用户    : ${GREEN}$NEW_USER${NC} ${YELLOW}(sudo需密码)${NC}"
-    printf "%b\n" "${BLUE}║${NC}  ${ICON_PORT} SSH端口 : ${GREEN}$NEW_PORT${NC} ${YELLOW}(原:$CURRENT_PORT)${NC}"
-    printf "%b\n" "${BLUE}║${NC}  ${ICON_LOCK} root登录: ${RED}将被禁止${NC}"
-    printf "%b\n" "${BLUE}║${NC}  ${ICON_AUTO} 自动更新: ${GREEN}默认启用${NC}"
-    printf "%b\n" "${BLUE}╚══════════════════════════════════════════════╝${NC}"
+    printf "%b\n" "${BLUE}════════════════════════════════════════════════${NC}"
+    printf "%b\n" "${BLUE}              📋 配置确认${NC}"
+    printf "%b\n" "${BLUE}════════════════════════════════════════════════${NC}"
+    printf "  %-12s %s\n"   "${ICON_HOST} 主机名"   ": ${GREEN}$NEW_HOSTNAME${NC}"
+    printf "  %-12s %s\n"   "${ICON_CLOCK} 时区"     ": ${GREEN}$TIMEZONE${NC}"
+    printf "  %-12s %s\n"   "${ICON_USER} 用户"     ": ${GREEN}$NEW_USER${NC} ${YELLOW}(sudo需密码)${NC}"
+    printf "  %-12s %s\n"   "${ICON_PORT} SSH端口"  ": ${GREEN}$NEW_PORT${NC} ${YELLOW}(原:$CURRENT_PORT)${NC}"
+    printf "  %-12s %s\n"   "${ICON_LOCK} root登录" ": ${RED}将被禁止${NC}"
+    printf "  %-12s %s\n"   "${ICON_AUTO} 自动更新" ": ${GREEN}默认启用${NC}"
+    printf "%b\n" "${BLUE}════════════════════════════════════════════════${NC}"
 
-    if ! confirm "  ${CYAN}➤${NC} 确认执行?" "N"; then
-        printf "\n%b\n" "  ${ICON_WARN} 已取消"; exit 0
+    if ! confirm "  确认执行?" "N"; then
+        printf "\n  ${ICON_WARN} 已取消\n"; exit 0
     fi
 
     #---- 执行配置 ----
     clear
-    printf "\n%b\n" "${CYAN}┌────────────────────────────────────────┐${NC}"
-    printf "%b\n" "${CYAN}│${NC}  ${ICON_ROCKET} 正在执行配置...                ${CYAN}│${NC}"
-    printf "%b\n" "${CYAN}└────────────────────────────────────────┘${NC}"
+    printf "%b\n" "${CYAN}════════════════════════════════════════════════${NC}"
+    printf "%b\n" "${CYAN}     🚀 正在执行配置...${NC}"
+    printf "%b\n" "${CYAN}════════════════════════════════════════════════${NC}"
 
     OLD_HOSTNAME=$(hostname)
     hostnamectl set-hostname "$NEW_HOSTNAME" 2>/dev/null || hostname "$NEW_HOSTNAME" 2>/dev/null || true
@@ -512,24 +567,24 @@ main() {
     CLIENT_IP_END=$(get_client_ip)
 
     clear
-    printf "%b\n" "${GREEN}╔══════════════════════════════════════════════╗${NC}"
-    printf "%b\n" "${GREEN}║${NC}       ${ICON_DONE}  初始化完成！${ICON_DONE}                      ${GREEN}║${NC}"
-    printf "%b\n" "${GREEN}╠══════════════════════════════════════════════╣${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${ICON_HOST} 主机名 : ${WHITE}$NEW_HOSTNAME${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${ICON_CLOCK} 时区   : ${WHITE}$TIMEZONE${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${ICON_USER} 用户   : ${WHITE}$NEW_USER${NC} ${YELLOW}(sudo需密码)${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${ICON_PORT} SSH端口: ${WHITE}$NEW_PORT${NC} ${YELLOW}(原:$CURRENT_PORT)${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${ICON_LOCK} root登录: ${RED}已禁止${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${ICON_IPV4} IPv4    : ${WHITE}$IPV4${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${ICON_IPV6} IPv6    : ${WHITE}$IPV6${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${ICON_CLIENT} 连接IP  : ${WHITE}$CLIENT_IP_END${NC}"
-    printf "%b\n" "${GREEN}╠══════════════════════════════════════════════╣${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${ICON_WARN} ${YELLOW}立即测试新连接:${NC}                       ${GREEN}║${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${WHITE}ssh -p $NEW_PORT $NEW_USER@$IPV4${NC}                 ${GREEN}║${NC}"
-    [ "$IPV6" != "无" ] && printf "%b\n" "${GREEN}║${NC}  ${WHITE}ssh -p $NEW_PORT $NEW_USER@$IPV6${NC}          ${GREEN}║${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${ICON_MENU} 输入 ${WHITE}vps${NC} 打开管理菜单              ${GREEN}║${NC}"
-    printf "%b\n" "${GREEN}║${NC}  ${ICON_INFO} 备份: ${WHITE}$BACKUP_DIR${NC}"
-    printf "%b\n" "${GREEN}╚══════════════════════════════════════════════╝${NC}"
+    printf "%b\n" "${GREEN}════════════════════════════════════════════════${NC}"
+    printf "%b\n" "${GREEN}              🎉 初始化完成！${NC}"
+    printf "%b\n" "${GREEN}════════════════════════════════════════════════${NC}"
+    printf "  %-12s %s\n"   "${ICON_HOST} 主机名"   ": ${WHITE}$NEW_HOSTNAME${NC}"
+    printf "  %-12s %s\n"   "${ICON_CLOCK} 时区"     ": ${WHITE}$TIMEZONE${NC}"
+    printf "  %-12s %s\n"   "${ICON_USER} 用户"     ": ${WHITE}$NEW_USER${NC} ${YELLOW}(sudo需密码)${NC}"
+    printf "  %-12s %s\n"   "${ICON_PORT} SSH端口"  ": ${WHITE}$NEW_PORT${NC} ${YELLOW}(原:$CURRENT_PORT)${NC}"
+    printf "  %-12s %s\n"   "${ICON_LOCK} root登录" ": ${RED}已禁止${NC}"
+    printf "  %-12s %s\n"   "${ICON_IPV4} IPv4"     ": ${WHITE}$IPV4${NC}"
+    printf "  %-12s %s\n"   "${ICON_IPV6} IPv6"     ": ${WHITE}$IPV6${NC}"
+    printf "  %-12s %s\n"   "${ICON_CLIENT} 连接IP"  ": ${WHITE}$CLIENT_IP_END${NC}"
+    printf "%b\n" "${GREEN}────────────────────────────────────────────────${NC}"
+    printf "  ${ICON_WARN} ${YELLOW}立即测试新连接:${NC}\n"
+    printf "  ${WHITE}ssh -p $NEW_PORT $NEW_USER@$IPV4${NC}\n"
+    [ "$IPV6" != "无" ] && printf "  ${WHITE}ssh -p $NEW_PORT $NEW_USER@$IPV6${NC}\n"
+    printf "  ${ICON_MENU} 输入 ${WHITE}vps${NC} 打开管理菜单\n"
+    printf "  ${ICON_INFO} 备份: ${WHITE}$BACKUP_DIR${NC}\n"
+    printf "%b\n" "${GREEN}════════════════════════════════════════════════${NC}"
     printf "\n"
 
     # 自动打开管理菜单
