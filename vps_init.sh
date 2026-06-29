@@ -1,7 +1,7 @@
 #!/bin/bash
 #==================================================
-# VPS 一键安全初始化脚本 v4.3 - 全面优化版
-# 新增：IPv4/IPv6 双栈显示、输入容错、体验优化
+# VPS 一键安全初始化脚本 v2.0.0
+# 新增：自动安全更新 (扩展选项 8)
 # 时区默认：Asia/Hong_Kong
 #==================================================
 set -o pipefail
@@ -23,7 +23,8 @@ ICON_ROCKET="🚀"; ICON_LOCK="🔒"; ICON_USER="👤"; ICON_HOST="🖥️"
 ICON_CLOCK="🕐"; ICON_PORT="🔌"; ICON_DONE="🎉"; ICON_PKG="📦"
 ICON_SWAP="💾"; ICON_BBR="⚡"; ICON_F2B="🛡️"; ICON_MON="📊"
 ICON_FW="🔥"; ICON_HARD="🧹"; ICON_CLIENT="🔗"
-ICON_IPV4="🌐"; ICON_IPV6="🌏"
+ICON_IPV4="🌐"; ICON_IPV6="🌏"; ICON_CPU="🧠"; ICON_DISK="💿"
+ICON_AUTO="🔄"
 
 #-------- 工具函数 --------
 log()    { printf "%s %b\n" "$(date '+%H:%M:%S')" "$*" | tee -a "$LOG_FILE"; }
@@ -93,34 +94,16 @@ generate_random_port() {
     done
 }
 
-# ★ 主机名验证：错误时警告并返回1，不退出
 validate_hostname() {
-    if [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$ ]]; then
-        return 0
-    else
-        warn "无效主机名: $1"
-        return 1
-    fi
+    [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$ ]] || { warn "无效主机名: $1"; return 1; }
 }
 
-# ★ 用户名验证：错误时警告并返回1，不退出
 validate_username() {
     local u="$1" r
     local reserved=(root bin daemon adm lp sync shutdown halt mail news uucp operator games gopher ftp nobody)
-    for r in "${reserved[@]}"; do
-        if [ "$u" = "$r" ]; then
-            warn "系统保留用户: $u"
-            return 1
-        fi
-    done
-    if id "$u" &>/dev/null; then
-        warn "用户 $u 已存在，请使用其他用户名"
-        return 1
-    fi
-    if [[ ! "$u" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
-        warn "用户名格式错误"
-        return 1
-    fi
+    for r in "${reserved[@]}"; do [ "$u" = "$r" ] && { warn "系统保留用户: $u"; return 1; }; done
+    id "$u" &>/dev/null && { warn "用户 $u 已存在，请使用其他用户名"; return 1; }
+    [[ "$u" =~ ^[a-z_][a-z0-9_-]*$ ]] || { warn "用户名格式错误"; return 1; }
     return 0
 }
 
@@ -148,20 +131,17 @@ restart_ssh() {
     systemctl restart "$svc" 2>/dev/null || service "$svc" restart 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null
 }
 
-# ★ 获取公网 IPv4（超时3秒）
 get_public_ipv4() {
     curl -s4 --max-time 3 ifconfig.me 2>/dev/null || \
     curl -s4 --max-time 3 icanhazip.com 2>/dev/null || \
     hostname -I 2>/dev/null | awk '{print $1}'
 }
 
-# ★ 获取公网 IPv6（超时3秒）
 get_public_ipv6() {
     curl -s6 --max-time 3 ifconfig.me 2>/dev/null || \
     curl -s6 --max-time 3 icanhazip.com 2>/dev/null
 }
 
-# ★ 获取当前SSH客户端IP（多重回退）
 get_client_ip() {
     [ -n "$SSH_CONNECTION" ] && { echo "$SSH_CONNECTION" | awk '{print $1}'; return; }
     [ -n "$SSH_CLIENT" ] && { echo "$SSH_CLIENT" | awk '{print $1}'; return; }
@@ -178,37 +158,42 @@ get_client_ip() {
     echo "未知"
 }
 
-# 显示系统信息（包含双栈IP）
 show_system_info() {
     clear
     printf "%b\n" "${BLUE}╔══════════════════════════════════════════════╗${NC}"
     printf "%b\n" "${BLUE}║${NC}           ${WHITE}📋 当前系统配置详情${NC}               ${BLUE}║${NC}"
     printf "%b\n" "${BLUE}╚══════════════════════════════════════════════╝${NC}"
-    [ -f /etc/os-release ] && { . /etc/os-release; OS_NAME="${PRETTY_NAME:-$NAME $VERSION}"; } || OS_NAME="未知"
-    KERNEL=$(uname -r)
+
+    if [ -f /etc/os-release ]; then . /etc/os-release; OS_NAME="${PRETTY_NAME:-$NAME $VERSION}"; else OS_NAME="未知"; fi
+    KERNEL="$(uname -r) ($(uname -m))"
     CPU_MODEL=$(grep -m1 "model name" /proc/cpuinfo 2>/dev/null | cut -d':' -f2 | xargs || echo "未知")
     CPU_CORES=$(nproc 2>/dev/null || echo "未知")
-    MEM_TOTAL=$(free -h 2>/dev/null | awk '/^Mem:/{print $2}' || echo "未知")
-    MEM_USED=$(free -h 2>/dev/null | awk '/^Mem:/{print $3}' || echo "未知")
-    DISK_INFO=$(df -h / 2>/dev/null | awk 'NR==2{print $3"/"$2" ("$5")"}' || echo "未知")
-    IPV4=$(get_public_ipv4)
-    [ -z "$IPV4" ] && IPV4="无"
-    IPV6=$(get_public_ipv6)
-    [ -z "$IPV6" ] && IPV6="无"
+    CPU_INFO="${CPU_MODEL} (${CPU_CORES} 核)"
+    if command -v free &>/dev/null; then
+        read MEM_TOTAL MEM_USED MEM_AVAIL <<< $(free -h 2>/dev/null | awk '/^Mem:/{print $2, $3, $7}')
+        [ -z "$MEM_TOTAL" ] && MEM_TOTAL="?"; [ -z "$MEM_USED" ] && MEM_USED="?"; [ -z "$MEM_AVAIL" ] && MEM_AVAIL="?"
+        MEM_INFO="已用 ${MEM_USED} / 总量 ${MEM_TOTAL} (可用 ${MEM_AVAIL})"
+    else MEM_INFO="未知"; fi
+    if command -v df &>/dev/null; then
+        read DISK_USED DISK_TOTAL DISK_PCT <<< $(df -h / 2>/dev/null | awk 'NR==2{print $3, $2, $5}')
+        [ -z "$DISK_USED" ] && DISK_USED="?"; [ -z "$DISK_TOTAL" ] && DISK_TOTAL="?"; [ -z "$DISK_PCT" ] && DISK_PCT="?"
+        DISK_INFO="已用 ${DISK_USED} / 总量 ${DISK_TOTAL} (使用率 ${DISK_PCT})"
+    else DISK_INFO="未知"; fi
+    IPV4=$(get_public_ipv4); [ -z "$IPV4" ] && IPV4="无"
+    IPV6=$(get_public_ipv6); [ -z "$IPV6" ] && IPV6="无"
     CLIENT_IP=$(get_client_ip)
     CURRENT_HOST=$(hostname)
     CURRENT_SSH=$(show_current_port)
     CURRENT_TZ=$(timedatectl show --property=Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "未知")
-    SWAP_INFO=$(swapon --show 2>/dev/null | awk 'NR>1{print $3}' | paste -sd+ | bc 2>/dev/null)
-    [ -z "$SWAP_INFO" ] && SWAP_INFO="无"
-    USERS=$(who | awk '{print $1}' | sort -u | paste -sd,)
-    [ -z "$USERS" ] && USERS="无"
+    SWAP_TOTAL=$(swapon --show=size 2>/dev/null | awk 'NR>1{sum+=$1} END{print sum}')
+    [ -z "$SWAP_TOTAL" ] || [ "$SWAP_TOTAL" -eq 0 ] && SWAP_INFO="无" || SWAP_INFO="${SWAP_TOTAL}MB"
+    USERS=$(who | awk '{print $1}' | sort -u | paste -sd,); [ -z "$USERS" ] && USERS="无"
 
     printf "%b\n" "  ${ICON_INFO} 系统    : ${GREEN}${OS_NAME}${NC}"
     printf "%b\n" "  ${ICON_INFO} 内核    : ${GREEN}${KERNEL}${NC}"
-    printf "%b\n" "  ${ICON_INFO} CPU     : ${GREEN}${CPU_MODEL} (${CPU_CORES} 核)${NC}"
-    printf "%b\n" "  ${ICON_INFO} 内存    : ${GREEN}${MEM_USED} / ${MEM_TOTAL}${NC}"
-    printf "%b\n" "  ${ICON_INFO} 磁盘    : ${GREEN}${DISK_INFO}${NC}"
+    printf "%b\n" "  ${ICON_CPU} CPU     : ${GREEN}${CPU_INFO}${NC}"
+    printf "%b\n" "  ${ICON_INFO} 内存    : ${GREEN}${MEM_INFO}${NC}"
+    printf "%b\n" "  ${ICON_DISK} 磁盘    : ${GREEN}${DISK_INFO}${NC}"
     printf "%b\n" "  ${ICON_IPV4} IPv4    : ${GREEN}${IPV4}${NC}"
     printf "%b\n" "  ${ICON_IPV6} IPv6    : ${GREEN}${IPV6}${NC}"
     printf "%b\n" "  ${ICON_CLIENT} 连接IP  : ${GREEN}${CLIENT_IP}${NC}"
@@ -223,13 +208,13 @@ show_system_info() {
 
 #---- 扩展功能 ----
 install_base_packages() {
-    printf "\n%b\n" "${CYAN}[扩展]${NC} ${ICON_PKG} 安装基础软件包..."
+    printf "\n%b\n" "${CYAN}[扩展 1]${NC} ${ICON_PKG} 安装基础软件包..."
     pkg_install curl wget vim git htop net-tools unzip zip lrzsz
     ok "基础软件包安装完成"
 }
 
 enable_bbr() {
-    printf "\n%b\n" "${CYAN}[扩展]${NC} ${ICON_BBR} 开启 BBR..."
+    printf "\n%b\n" "${CYAN}[扩展 2]${NC} ${ICON_BBR} 开启 BBR..."
     [ $(uname -r | cut -d. -f1) -lt 4 ] && { warn "内核版本过低，无法开启 BBR"; return; }
     grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf || echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
     grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf || echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
@@ -238,7 +223,7 @@ enable_bbr() {
 }
 
 create_swap() {
-    printf "\n%b\n" "${CYAN}[扩展]${NC} ${ICON_SWAP} 创建 Swap..."
+    printf "\n%b\n" "${CYAN}[扩展 3]${NC} ${ICON_SWAP} 创建 Swap..."
     swapon --show 2>/dev/null | grep -q "swap" && { ok "Swap 已存在，跳过"; return; }
     local mem_mb=$(free -m | awk '/^Mem:/{print $2}') swap_size
     if [ "$mem_mb" -le 1024 ]; then swap_size=$(( mem_mb * 2 ))
@@ -255,7 +240,7 @@ create_swap() {
 }
 
 install_fail2ban() {
-    printf "\n%b\n" "${CYAN}[扩展]${NC} ${ICON_F2B} 安装 Fail2Ban..."
+    printf "\n%b\n" "${CYAN}[扩展 4]${NC} ${ICON_F2B} 安装 Fail2Ban..."
     pkg_install fail2ban
     cat > /etc/fail2ban/jail.local << EOF
 [DEFAULT]
@@ -272,14 +257,14 @@ EOF
 }
 
 install_monitoring() {
-    printf "\n%b\n" "${CYAN}[扩展]${NC} ${ICON_MON} 安装监控工具..."
+    printf "\n%b\n" "${CYAN}[扩展 5]${NC} ${ICON_MON} 安装监控工具..."
     if command -v snap &>/dev/null; then snap install btop 2>/dev/null; else pkg_install btop 2>/dev/null || true; fi
     pip install glances 2>/dev/null || pkg_install glances 2>/dev/null || true
     ok "监控安装完成"
 }
 
 configure_firewall_rules() {
-    printf "\n%b\n" "${CYAN}[扩展]${NC} ${ICON_FW} 配置防火墙规则..."
+    printf "\n%b\n" "${CYAN}[扩展 6]${NC} ${ICON_FW} 配置防火墙规则..."
     local ssh_port=${NEW_PORT:-22}
     if command -v ufw &>/dev/null; then
         ufw --force reset 2>/dev/null
@@ -305,7 +290,7 @@ configure_firewall_rules() {
 }
 
 system_hardening() {
-    printf "\n%b\n" "${CYAN}[扩展]${NC} ${ICON_HARD} 系统安全加固..."
+    printf "\n%b\n" "${CYAN}[扩展 7]${NC} ${ICON_HARD} 系统安全加固..."
     passwd -l root 2>/dev/null && ok "已锁定 root 密码" || true
     [ -f /etc/ssh/sshd_config ] && {
         safe_sed /etc/ssh/sshd_config "PermitEmptyPasswords" "PermitEmptyPasswords no"
@@ -320,30 +305,63 @@ system_hardening() {
     ok "系统加固完成"
 }
 
+# ★ 配置自动安全更新
+configure_auto_updates() {
+    printf "\n%b\n" "${CYAN}[扩展 8]${NC} ${ICON_AUTO} 配置自动安全更新..."
+    case $PKG_MGR in
+        apt)
+            pkg_install unattended-upgrades
+            cat > /etc/apt/apt.conf.d/20auto-upgrades << EOF
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+EOF
+            # 确保安全更新源启用
+            if [ -f /etc/apt/apt.conf.d/50unattended-upgrades ]; then
+                sed -i 's|//\t"${distro_id}:${distro_codename}-security";|\t"${distro_id}:${distro_codename}-security";|' /etc/apt/apt.conf.d/50unattended-upgrades
+            fi
+            ok "Unattended Upgrades 已启用（每日自动安装安全更新）"
+            ;;
+        dnf|yum)
+            pkg_install dnf-automatic
+            sed -i 's/apply_updates = no/apply_updates = yes/' /etc/dnf/automatic.conf
+            systemctl enable --now dnf-automatic.timer 2>/dev/null
+            ok "dnf-automatic 已启用（每日自动更新）"
+            ;;
+        apk)
+            (crontab -l 2>/dev/null; echo "0 3 * * * apk update && apk upgrade -y") | crontab -
+            ok "已添加每日 3:00 自动更新 cron 任务"
+            ;;
+    esac
+}
+
+# ★ 扩展菜单 (1-8，0 跳过)
 extended_features() {
     printf "\n%b\n" "${CYAN}┌────────────────────────────────────────┐${NC}"
     printf "%b\n" "${CYAN}│${NC}  🧩 可选扩展功能 (空格分隔多选)       ${CYAN}│${NC}"
     printf "%b\n" "${CYAN}└────────────────────────────────────────┘${NC}"
-    printf "%b\n" "  ${GREEN}2${NC}) ${ICON_PKG} 安装基础软件包"
-    printf "%b\n" "  ${GREEN}3${NC}) ${ICON_BBR} 开启 BBR 加速"
-    printf "%b\n" "  ${GREEN}4${NC}) ${ICON_SWAP} 创建 Swap"
-    printf "%b\n" "  ${GREEN}5${NC}) ${ICON_F2B} 安装 Fail2Ban"
-    printf "%b\n" "  ${GREEN}6${NC}) ${ICON_MON} 安装监控 (btop+glances)"
-    printf "%b\n" "  ${GREEN}7${NC}) ${ICON_FW} 配置防火墙规则"
-    printf "%b\n" "  ${GREEN}8${NC}) ${ICON_HARD} 系统清理与安全加固"
+    printf "%b\n" "  ${GREEN}1${NC}) ${ICON_PKG} 安装基础软件包"
+    printf "%b\n" "  ${GREEN}2${NC}) ${ICON_BBR} 开启 BBR 加速"
+    printf "%b\n" "  ${GREEN}3${NC}) ${ICON_SWAP} 创建 Swap"
+    printf "%b\n" "  ${GREEN}4${NC}) ${ICON_F2B} 安装 Fail2Ban"
+    printf "%b\n" "  ${GREEN}5${NC}) ${ICON_MON} 安装监控 (btop+glances)"
+    printf "%b\n" "  ${GREEN}6${NC}) ${ICON_FW} 配置防火墙规则"
+    printf "%b\n" "  ${GREEN}7${NC}) ${ICON_HARD} 系统清理与安全加固"
+    printf "%b\n" "  ${GREEN}8${NC}) ${ICON_AUTO} 配置自动安全更新"
     printf "%b\n" "  ${GREEN}0${NC}) 跳过 (默认)"
     printf "%b" "  ${CYAN}➤${NC} 请选择 [0]: "
     read -a FEATURES
     [ ${#FEATURES[@]} -eq 0 ] && FEATURES=(0)
     for f in "${FEATURES[@]}"; do
         case $f in
-            2) install_base_packages ;;
-            3) enable_bbr ;;
-            4) create_swap ;;
-            5) install_fail2ban ;;
-            6) install_monitoring ;;
-            7) configure_firewall_rules ;;
-            8) system_hardening ;;
+            1) install_base_packages ;;
+            2) enable_bbr ;;
+            3) create_swap ;;
+            4) install_fail2ban ;;
+            5) install_monitoring ;;
+            6) configure_firewall_rules ;;
+            7) system_hardening ;;
+            8) configure_auto_updates ;;
             0) break ;;
             *) warn "无效选项: $f" ;;
         esac
@@ -378,7 +396,7 @@ main() {
 
     clear
     printf "%b\n" "${BLUE}╔══════════════════════════════════════════════╗${NC}"
-    printf "%b\n" "${BLUE}║${NC}    ${ICON_ROCKET} VPS 一键初始化脚本 v4.3 全面版${NC}         ${BLUE}║${NC}"
+    printf "%b\n" "${BLUE}║${NC}    ${ICON_ROCKET} VPS 一键初始化脚本 v2.0.0${NC}               ${BLUE}║${NC}"
     printf "%b\n" "${BLUE}╚══════════════════════════════════════════════╝${NC}"
 
     #---- 1. 主机名 ----
@@ -390,7 +408,6 @@ main() {
         validate_hostname "$NEW_HOSTNAME" && break
     done
 
-    # 时区预设
     TIMEZONE="Asia/Hong_Kong"
     printf "\n%b\n" "${CYAN}┌────────────────────────────────────────┐${NC}"
     printf "%b\n" "${CYAN}│${NC}  ${ICON_CLOCK} 时区已预设为: ${GREEN}${TIMEZONE}${NC}"
@@ -462,7 +479,6 @@ main() {
     printf "%b\n" "${CYAN}│${NC}  ${ICON_ROCKET} 正在执行基础配置...            ${CYAN}│${NC}"
     printf "%b\n" "${CYAN}└────────────────────────────────────────┘${NC}"
 
-    # 主机名
     OLD_HOSTNAME=$(hostname)
     hostnamectl set-hostname "$NEW_HOSTNAME" 2>/dev/null || hostname "$NEW_HOSTNAME" 2>/dev/null || true
     echo "$NEW_HOSTNAME" > /etc/hostname
@@ -470,11 +486,9 @@ main() {
     grep -q "$NEW_HOSTNAME" /etc/hosts || echo "127.0.1.1 $NEW_HOSTNAME" >> /etc/hosts
     ok "主机名: ${GREEN}$OLD_HOSTNAME${NC} → ${GREEN}$NEW_HOSTNAME${NC}"
 
-    # 时区
     timedatectl set-timezone "$TIMEZONE" 2>/dev/null || ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime 2>/dev/null || true
     ok "时区已设置为: ${GREEN}$TIMEZONE${NC}"
 
-    # 用户
     useradd -m -s /bin/bash "$NEW_USER" 2>/dev/null || adduser -D -s /bin/bash "$NEW_USER" 2>/dev/null || true
     echo "$NEW_USER:$USER_PASS" | chpasswd 2>/dev/null || passwd "$NEW_USER" <<< "$USER_PASS"$'\n'"$USER_PASS" 2>/dev/null || true
     getent group sudo &>/dev/null && usermod -aG sudo "$NEW_USER" 2>/dev/null
@@ -488,7 +502,6 @@ main() {
         ok "sudo 权限已授予 (需密码)"
     fi
 
-    # SSH
     SSH_SERVICE=$(detect_ssh_service)
     SSHD_CONFIG="/etc/ssh/sshd_config"
     [ -f "$SSHD_CONFIG" ] || SSHD_CONFIG="/etc/ssh/ssh_config"
@@ -501,13 +514,11 @@ main() {
     safe_sed "$SSHD_CONFIG" "X11Forwarding" "X11Forwarding no"
     grep -q "^Protocol" "$SSHD_CONFIG" 2>/dev/null || echo "Protocol 2" >> "$SSHD_CONFIG"
 
-    # 防火墙
     if command -v ufw &>/dev/null; then ufw allow "$NEW_PORT"/tcp 2>/dev/null; fi
     if command -v firewall-cmd &>/dev/null; then
         firewall-cmd --permanent --add-port="$NEW_PORT"/tcp 2>/dev/null && firewall-cmd --reload 2>/dev/null
     fi
 
-    # 重启 SSH
     if sshd -t 2>/dev/null; then
         restart_ssh "$SSH_SERVICE"
         ok "SSH 服务已重启，新端口: ${GREEN}$NEW_PORT${NC}"
@@ -518,17 +529,11 @@ main() {
         err "已恢复原配置"
     fi
 
-    # 扩展功能
     extended_features
-
-    # 快捷命令
     install_vps_shortcut
 
-    # 完成画面（显示双栈IP）
-    IPV4=$(get_public_ipv4)
-    [ -z "$IPV4" ] && IPV4="无"
-    IPV6=$(get_public_ipv6)
-    [ -z "$IPV6" ] && IPV6="无"
+    IPV4=$(get_public_ipv4); [ -z "$IPV4" ] && IPV4="无"
+    IPV6=$(get_public_ipv6); [ -z "$IPV6" ] && IPV6="无"
     CLIENT_IP_END=$(get_client_ip)
 
     clear
