@@ -1,6 +1,6 @@
 #!/bin/bash
 #==================================================
-# VPS 一键安全初始化脚本 v4.0 - 精简优化版
+# VPS 一键安全初始化脚本 v4.1 - 代码结构优化 + 快捷命令
 # 时区默认：Asia/Hong_Kong
 #==================================================
 set -o pipefail
@@ -16,6 +16,7 @@ if [ -t 1 ] && command -v tput &>/dev/null && tput setaf 1 &>/dev/null; then
 else
     RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; WHITE=''; NC=''
 fi
+
 ICON_OK="✅"; ICON_ERR="❌"; ICON_WARN="⚠️"; ICON_INFO="📌"
 ICON_ROCKET="🚀"; ICON_LOCK="🔒"; ICON_USER="👤"; ICON_HOST="🖥️"
 ICON_CLOCK="🕐"; ICON_PORT="🔌"; ICON_DONE="🎉"; ICON_PKG="📦"
@@ -28,7 +29,9 @@ ok()     { log "  ${ICON_OK} $*"; }
 warn()   { log "  ${ICON_WARN} $*"; }
 err()    { log "  ${ICON_ERR} $*"; exit 1; }
 
-check_root() { [ "$EUID" -eq 0 ] || { printf "%b\n" "${RED}${ICON_ERR} 请使用root运行${NC}"; exit 1; }; }
+check_root() {
+    [ "$EUID" -eq 0 ] || { printf "%b\n" "${RED}${ICON_ERR} 请使用root运行${NC}"; exit 1; }
+}
 
 detect_pkg_manager() {
     if command -v apt &>/dev/null; then
@@ -52,6 +55,7 @@ pkg_install() {
     esac
 }
 
+# 安全确认（仅返回状态码，无多余输出）
 confirm() {
     local prompt="$1" default="$2" input
     while true; do
@@ -60,9 +64,9 @@ confirm() {
         input=$(echo "$input" | xargs)
         [ -z "$input" ] && input="$default"
         case "$input" in
-            [Yy]*) echo "Y"; return 0;;
-            [Nn]*) echo "N"; return 1;;
-            *) printf "%b\n" "${YELLOW}请输入 Y 或 N${NC}";;
+            [Yy]*) return 0 ;;
+            [Nn]*) return 1 ;;
+            *) printf "%b\n" "${YELLOW}请输入 Y 或 N${NC}" ;;
         esac
     done
 }
@@ -122,6 +126,7 @@ restart_ssh() {
     systemctl restart "$svc" 2>/dev/null || service "$svc" restart 2>/dev/null || service ssh restart 2>/dev/null || service sshd restart 2>/dev/null
 }
 
+# 显示系统信息（精简版）
 show_system_info() {
     clear
     printf "%b\n" "${BLUE}╔══════════════════════════════════════════════╗${NC}"
@@ -291,6 +296,26 @@ extended_features() {
     done
 }
 
+#-------- 快捷命令安装 --------
+install_vps_shortcut() {
+    if confirm "  ${CYAN}➤${NC} 是否创建快捷命令 vps (下次直接输入 vps 运行本脚本)?" "N"; then
+        local target="/usr/local/bin/vps"
+        # 判断脚本自身路径
+        if [ -f "$0" ] && [ "$0" != "bash" ] && [ "$0" != "/dev/fd/63" ]; then
+            cp "$0" "$target"
+        else
+            # 从 GitHub 下载最新版
+            curl -sL "https://raw.githubusercontent.com/GDLiBai/vps/main/vps_init.sh" -o "$target"
+        fi
+        chmod +x "$target" 2>/dev/null
+        if [ -x "$target" ]; then
+            ok "快捷命令已创建，下次输入 ${GREEN}vps${NC} 即可运行本脚本"
+        else
+            warn "快捷命令创建失败，请手动设置"
+        fi
+    fi
+}
+
 #========== 主流程 ==========
 main() {
     check_root
@@ -298,12 +323,11 @@ main() {
     mkdir -p "$(dirname "$LOG_FILE")" "$BACKUP_DIR"
     log "VPS 初始化开始"
 
-    # 显示系统信息
     show_system_info
 
     clear
     printf "%b\n" "${BLUE}╔══════════════════════════════════════════════╗${NC}"
-    printf "%b\n" "${BLUE}║${NC}    ${ICON_ROCKET} VPS 一键初始化脚本 v4.0 精简版${NC}         ${BLUE}║${NC}"
+    printf "%b\n" "${BLUE}║${NC}    ${ICON_ROCKET} VPS 一键初始化脚本 v4.1 优化版${NC}         ${BLUE}║${NC}"
     printf "%b\n" "${BLUE}╚══════════════════════════════════════════════╝${NC}"
 
     #---- 1. 主机名 ----
@@ -315,7 +339,7 @@ main() {
         validate_hostname "$NEW_HOSTNAME" && break
     done
 
-    # 时区直接设置为香港（跳过步骤2）
+    # 时区预设（香港）
     TIMEZONE="Asia/Hong_Kong"
     printf "\n%b\n" "${CYAN}┌────────────────────────────────────────┐${NC}"
     printf "%b\n" "${CYAN}│${NC}  ${ICON_CLOCK} 时区已预设为: ${GREEN}${TIMEZONE}${NC}"
@@ -395,7 +419,7 @@ main() {
     grep -q "$NEW_HOSTNAME" /etc/hosts || echo "127.0.1.1 $NEW_HOSTNAME" >> /etc/hosts
     ok "主机名: ${GREEN}$OLD_HOSTNAME${NC} → ${GREEN}$NEW_HOSTNAME${NC}"
 
-    # 2. 时区 (香港)
+    # 2. 时区
     timedatectl set-timezone "$TIMEZONE" 2>/dev/null || ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime 2>/dev/null || true
     ok "时区已设置为: ${GREEN}$TIMEZONE${NC}"
 
@@ -445,6 +469,9 @@ main() {
 
     # 扩展功能
     extended_features
+
+    # 快捷命令创建
+    install_vps_shortcut
 
     # 完成画面
     IP_ADDR=$(curl -s4 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "未知")
